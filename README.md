@@ -1,4 +1,25 @@
-# FloatCTF 平台
+<h1 align="center">
+  <img src="./float.png" alt="FloatCTF" width="128" />
+  <br>
+  FloatCTF
+  <br>
+</h1>
+
+<h3 align="center">
+A CTF Platform based on <a href="https://rust-lang.org/">Rust</a>.
+</h3>
+
+
+![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)
+![React](https://img.shields.io/badge/React-20232a.svg?logo=react&logoColor=61DAFB)
+![tailwindcss](https://img.shields.io/badge/tailwindcss-38B2AC.svg?logo=tailwind-css&logoColor=white)
+[![Zed](https://img.shields.io/badge/Zed-084CCF?logo=zed&logoColor=white)](https://zed.dev/)
+[![TanStack Router](https://img.shields.io/badge/TanStack_Router-FF4154?logo=react-router&logoColor=white)](https://tanstack.com/router)
+[![TanStack Query](https://img.shields.io/badge/TanStack_Query-FF4154?logo=react-query&logoColor=white)](https://tanstack.com/query)
+[![SeaORM](https://img.shields.io/badge/SeaORM-222222?logo=rust&logoColor=white)](https://www.sea-ql.org/SeaORM/)
+[![Actix Web](https://img.shields.io/badge/Actix_Web-000000?logo=actix&logoColor=white)](https://actix.rs/)
+
+## 简述
 
 基于Rust的高校CTF实训及竞赛平台
 
