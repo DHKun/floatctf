@@ -1,6 +1,6 @@
 # FloatCTF 平台
 
-基于 Docker 部署的自托管 CTF（夺旗赛）竞赛平台。
+基于Rust的高校CTF实训及竞赛平台
 
 ## 架构说明
 
