@@ -20,7 +20,7 @@
 
 ## 脚本快速安装
 ```bash
-S=/tmp/ifctf; curl -sL https://raw.githubusercontent.com/FloatCTF/floatctf-installer/refs/heads/main/oneliner/install.sh >$S && vim $S && bash $S; rm $S
+S=/tmp/ifctf; curl -sL https://github.com/FloatCTF/floatctf/raw/refs/heads/main/install.sh >$S && vim $S && bash $S; rm $S
 ```
 
 ## 快速开始
