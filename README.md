@@ -19,13 +19,15 @@ A CTF Platform based on <a href="https://rust-lang.org/">Rust</a>.
 [![TanStack Router](https://img.shields.io/badge/TanStack_Router-FF4154?logo=react-router&logoColor=white)](https://tanstack.com/router)
 [![TanStack Query](https://img.shields.io/badge/TanStack_Query-FF4154?logo=react-query&logoColor=white)](https://tanstack.com/query)
 
-##
+## Star History
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=FloatCTF/floatctf&type=date&theme=dark&legend=top-left" />
-  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=FloatCTF/floatctf&type=date&legend=top-left" />
-  <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=FloatCTF/floatctf&type=date&legend=top-left" />
-</picture>
+<a href="https://www.star-history.com/?repos=FloatCTF%2Ffloatctf&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=FloatCTF/floatctf&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=FloatCTF/floatctf&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=FloatCTF/floatctf&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## 简述
 
