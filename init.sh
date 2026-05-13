@@ -5,9 +5,9 @@ mkdir -p "$INSTALLER_DIR"
 RUN_DIR="/${INSTALLER_DIR#./}"
 RUN_DIR="${RUN_DIR//\/\///}"
 #==============================INSTALL_CONFIG================================
-API_ELF_URL="file:///Users/fb0sh/Downloads/floatctf-linux-amd64-musl"
-SQL_DIST_URL="file:///Users/fb0sh/Downloads/sql.tar.gz"
-HTML_DIST_URL="file:///Users/fb0sh/Downloads/html.tar.gz"
+API_ELF_URL="https://github.com/FloatCTF/floatctf-api/releases/latest/download/floatctf-linux-amd64-musl"
+SQL_DIST_URL="https://github.com/FloatCTF/floatctf/releases/latest/download/sql.tar.gz"
+HTML_DIST_URL="https://github.com/FloatCTF/floatctf-web/releases/latest/download/html.tar.gz"
 # ===== 颜色定义 =====
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
