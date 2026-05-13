@@ -147,10 +147,9 @@ floatctf/
     │   ├── api/
     │   ├── nginx/
     │   └── rustfs/
-    ├── nginx/conf/      # Nginx 配置
     ├── tmp/             # 临时文件
     │   └── sql/         # 数据库架构
-    └── 1.py             # S3 存储桶初始化脚本
+    └── nginx/conf/      # Nginx 配置
 ```
 
 ## 核心功能
