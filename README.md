@@ -59,8 +59,8 @@ S=/tmp/ifctf; curl -sL https://github.com/FloatCTF/floatctf/raw/refs/heads/main/
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/FloatCTF/floatctf-docker.git
-cd floatctf-docker
+git clone https://github.com/FloatCTF/floatctf.git
+cd floatctf
 ```
 
 ### 2. 配置环境变量
@@ -130,19 +130,27 @@ docker compose --env-file ./.env --env-file ./app/.env up -d
 
 ### 用户端
 
-|              登录页面              |          天梯排行榜           |                做题页                 |
-| :--------------------------------: | :---------------------------: | :-----------------------------------: |
+|            登录页面             |          天梯排行榜          |             做题页              |
+| :-----------------------------: | :--------------------------: | :-----------------------------: |
 | ![登录页面](docs/images/login.png) | ![首页](docs/images/home.png) | ![题单页](docs/images/challenges.png) |
 
-|                讨论页                 |               积分看板                |
-| :-----------------------------------: | :-----------------------------------: |
+|              讨论页              |             积分看板              |
+| :------------------------------: | :-------------------------------: |
 | ![讨论页](docs/images/discussion.png) | ![比赛页](docs/images/scoreboard.png) |
+
+|           比赛题目页           |
+| :----------------------------: |
+| ![比赛题目](docs/images/event_challenges.png) |
 
 ### 管理端
 
-|              数据大屏              |
-| :--------------------------------: |
-| ![管理后台](docs/images/score.png) |
+|              概览              |
+| :----------------------------: |
+| ![概览](docs/images/dashboard.png) |
+
+|            赛题管理            |            数据大屏             |
+| :----------------------------: | :-----------------------------: |
+| ![赛题管理](docs/images/event_detail.png) | ![管理后台](docs/images/score.png) |
 
 ## 核心功能
 
@@ -277,9 +285,9 @@ docker compose --env-file ./.env --env-file ./app/.env up -d --force-recreate
 
 ## 未来展望
 
-- **引入 Kubernetes 集群** — 突破单机限制，支撑更大规模省级乃至国家级竞赛
+- **引入 Kubernetes 集群** — 突破单机限制，支撑更大规模竞赛
 - **拓展更多赛制** — 计划支持 AWDP、KOH（占山为王）、ISW（内网渗透）等模式
-- **深化教学融合** — 增加学生成长轨迹记录、知识点关联与学习数据分析
+- **深化教学融合** — 增加成长轨迹记录、知识点关联与学习数据分析
 
 ## 许可证
 
