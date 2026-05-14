@@ -203,6 +203,7 @@ FloatCTF 采用多仓库架构，各组件独立维护：
 | [floatctf-challenges](https://github.com/FloatCTF/floatctf-challenges) | 题目仓库                                  |
 | [challenge-template](https://github.com/FloatCTF/challenge-template)   | 出题教程 / 题目模板                       |
 | [fcmc](https://github.com/FloatCTF/fcmc)                               | 容器管理 / 出题工具                       |
+| [floatctf-challenge-creator](https://github.com/FloatCTF/floatctf-challenge-creator) | Claude Code 出题 Skill                    |
 
 **赛事相关：**
 
