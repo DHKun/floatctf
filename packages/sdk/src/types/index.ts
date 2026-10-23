@@ -40,3 +40,13 @@ export type {
 	ChallengeScanItem,
 	ImportChallengeResponse,
 } from "./adminChallenge.js";
+export type {
+	CreateOidcClientInput,
+	OidcAdminClientDto,
+	OidcAuthorizationDto,
+	OidcClientDto,
+	OidcClientInput,
+	OidcClientWithSecretDto,
+	OidcProviderInfo,
+	SsoBridgeResult,
+} from "./oidc.js";

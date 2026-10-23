@@ -701,6 +701,8 @@ services:
             - "host.docker.internal:host-gateway"
         volumes:
             - ${FLOATCTF_HOME}/config/floatctf.toml:/etc/floatctf/floatctf.toml:ro
+            # OIDC Provider 签名私钥（[oidc].signing_keys 引用 /etc/floatctf/oidc/<kid>.pem）；只读挂载。
+            - ${FLOATCTF_HOME}/config/oidc:/etc/floatctf/oidc:ro
             - ${FLOATCTF_HOME}/runtime:/var/lib/floatctf/runtime
             - /run/floatctf:/run/floatctf:ro
         networks:
@@ -860,6 +862,17 @@ allowed_origins = []
 [features]
 unsafe_sql_admin = false
 web_terminal = true
+# OpenID Connect Provider（FloatCTF 账号登录第三方应用）。默认关闭。
+# 开启步骤与 key 轮换见 docs/identity/oidc-operations.md；私钥放在宿主 $FLOATCTF_HOME/config/oidc/
+# （容器内只读挂载为 /etc/floatctf/oidc），权限 root:floatctf 0640。issuer 必须与站点 https origin 完全一致。
+# [oidc]
+# enabled = true
+# issuer = "https://ctf.example.com"
+# require_client_approval = true
+# [[oidc.signing_keys]]
+# kid = "oidc-20261023-a1b2"
+# private_key_file = "/etc/floatctf/oidc/oidc-20261023-a1b2.pem"
+# active = true
 CONFIG_TMPL_EOF
     ok "已写出 config 模板"
 }
@@ -881,6 +894,13 @@ write_caddy_template() {
 
     # API, SSE and WebSocket (including the web terminal).
     handle /api/* {
+        reverse_proxy api:{$API_PORT:9090}
+    }
+
+    # OpenID Connect Provider（FloatCTF 账号登录）：协议端点与发现文档由 API 提供，
+    # 绝不能落到前端 SPA 的 index.html。[oidc].enabled = false 时 API 对这些路径返回 404。
+    @oidc path /oauth/* /.well-known/openid-configuration /.well-known/oauth-authorization-server /.well-known/jwks.json
+    handle @oidc {
         reverse_proxy api:{$API_PORT:9090}
     }
 
@@ -1867,7 +1887,7 @@ precheck() {
 
 prepare_env() {
     info "──── 部署：配置（.env + floatctf.toml + Caddyfile）────"
-    mkdir -p "$FLOATCTF_HOME/config/caddy" "$FLOATCTF_HOME/data/caddy" "$FLOATCTF_HOME/data/caddy-config" "$FLOATCTF_HOME/logs/rustfs"
+    mkdir -p "$FLOATCTF_HOME/config/caddy" "$FLOATCTF_HOME/config/oidc" "$FLOATCTF_HOME/data/caddy" "$FLOATCTF_HOME/data/caddy-config" "$FLOATCTF_HOME/logs/rustfs"
     local site_address fctf_uid fctf_gid
     site_address=$(env_get SITE_ADDRESS "")
     [ -n "$site_address" ] || die "生产部署必须设置 SITE_ADDRESS（例如 ctf.example.com），并将该域名 DNS 指向本机"
@@ -2040,8 +2060,8 @@ prepare_configs() {
     fi
     cp "$FLOATCTF_HOME/.Caddyfile.tmpl" "$FLOATCTF_HOME/config/caddy/Caddyfile"
     rm -f "$FLOATCTF_HOME/.floatctf.toml.tmpl.real"
-    chown root:"$FCTF_USER" "$FLOATCTF_HOME/config" "$FLOATCTF_HOME/config/caddy"
-    chmod 750 "$FLOATCTF_HOME/config" "$FLOATCTF_HOME/config/caddy"
+    chown root:"$FCTF_USER" "$FLOATCTF_HOME/config" "$FLOATCTF_HOME/config/caddy" "$FLOATCTF_HOME/config/oidc"
+    chmod 750 "$FLOATCTF_HOME/config" "$FLOATCTF_HOME/config/caddy" "$FLOATCTF_HOME/config/oidc"
     chown root:"$FCTF_USER" "$FLOATCTF_HOME/config/floatctf.toml" "$FLOATCTF_HOME/config/caddy/Caddyfile"
     chmod 640 "$FLOATCTF_HOME/config/floatctf.toml" "$FLOATCTF_HOME/config/caddy/Caddyfile"
     chown -R "$FCTF_UID":"$FCTF_USER" "$FLOATCTF_HOME/data/caddy" "$FLOATCTF_HOME/data/caddy-config" 2>/dev/null || true

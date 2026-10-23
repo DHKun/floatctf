@@ -53,12 +53,28 @@
 | Auth | 头像上传 | player | `client.service.uploads.upload_avatar` | `frontends/default/src/routes/service/profile.tsx` | — | optional — 展示性资料，缺省不影响赛程 |
 | Auth | 忘记密码（发送重置邮件） | player | `client.service.users.resetPassword` | `frontends/default/src/routes/reset_password.tsx`（`/reset_password`） | — | required — 账号自助恢复入口 |
 | Auth | 凭 token 重置密码 | player | `client.service.users.reset` | `frontends/default/src/routes/reset.tsx`（`/reset`） | — | required — 用户必须能用重置邮件中的 token 完成改密；页面与路由由前端自定 |
-| Auth | 选手登出 | player | 无服务端端点（JWT 无状态）；前端自行清除 token | `frontends/default/src/components/Header.tsx`（`useAuthStore.getState().removeToken()`） | — | required — 选手必须能结束本地会话 |
+| Auth | 选手登出 | player | 平台 JWT 无状态，前端自行清除 token；OIDC 启用时另调 `client.service.oidc.endSso()`（`DELETE /api/users/sso`）撤销服务端 SSO 会话 | `frontends/default/src/components/Header.tsx`（`endSso()` + `removeToken()`） | — | required — 选手必须能结束本地会话；启用 OIDC 的部署还必须撤销 SSO 会话，否则第三方应用仍可无密码登录 |
 | Auth | 管理端登录 | admin | `client.admin.login` | `frontends/default/src/routes/admin/index.tsx`（`/admin/`） | — | required — 运维端必经入口 |
 | Auth | 管理端登出 | admin | 无服务端端点（JWT 无状态）；前端自行清除 admin token | `frontends/default/src/components/Header.tsx`（`removeAdminToken()`） | — | required — 运维必须能结束本地会话 |
 | Auth | 401 统一处理（清对应 token；重新登录的引导方式由前端决定） | both | `FloatCTFClientOptions.onUnauthorized`、`UnauthorizedContext`、`FloatCTFAuthScope` | `frontends/default/src/api/client.ts` | — | required — 令牌过期 / 失效后的统一行为（清对应用户端 token），不得静默失败 |
 | Auth | token 注入（选手 / 管理端两个来源） | both | `FloatCTFClientOptions.getUserToken`、`getAdminToken` | `frontends/default/src/api/client.ts` + `frontends/default/src/stores/AuthStore.ts` | — | required — SDK 不持有 token，必须由前端注入 |
 | Auth | 非 401 错误回调 | both | `FloatCTFClientOptions.onError`、`requestConfig` | `frontends/default/src/api/client.ts` | — | optional — 统一日志 / 埋点，不影响功能 |
+
+## FloatCTF 账号登录（OpenID Connect Provider）
+
+> 仅当部署开启 `[oidc].enabled` 时存在（关闭时这些接口返回 404，前端应隐藏入口或展示"未启用"）。
+> 协议交互页（`/oauth/login`、`/oauth/consent`、错误页）由 API 服务端渲染，**任何前端都不需要实现**；
+> 前端只负责 SSO 会话衔接、开发者中心、已授权应用与管理员审核。设计见 [`docs/identity/ADR-oidc-provider.md`](../identity/ADR-oidc-provider.md)。
+
+| Area | Capability | User/Admin | Public SDK surface | Default reference | Realtime | Required for complete frontend |
+|---|---|---|---|---|---|---|
+| OIDC | 平台登录后建立 SSO 会话 | player | 无需调用：`client.service.users.login` 成功时服务端随响应下发 HttpOnly Cookie（同源 fetch 自动保存） | `frontends/default/src/routes/index.tsx` | — | required（OIDC 启用时）— 已登录用户授权第三方时不再输密码 |
+| OIDC | 已持有 JWT 的会话补建 SSO（幂等） | player | `client.service.oidc.establishSso()`（`POST /api/users/sso`） | `frontends/default/src/routes/service/route.tsx`（`useSsoBridge`） | — | required（OIDC 启用时）— 覆盖功能上线前登录、JWT 仍有效的会话 |
+| OIDC | 登出时撤销 SSO 会话 | player | `client.service.oidc.endSso()` | `frontends/default/src/components/Header.tsx` | — | required（OIDC 启用时）|
+| OIDC | 已授权应用列表 / 撤销 | player | `client.service.oidc.listAuthorizations`、`revokeAuthorization`（`OidcAuthorizationDto`） | `frontends/default/src/routes/service/authorizations.tsx` | — | required（OIDC 启用时）— 用户必须能查看并撤回第三方访问；撤销不退出第三方本地会话，需如实告知 |
+| OIDC | 开发者中心：我的应用 CRUD、接入配置 | player | `client.service.oidc.provider`、`listClients`、`createClient`、`getClient`、`updateClient`、`disableClient`、`enableClient`、`deleteClient`（`OidcClientDto`、`OidcProviderInfo`） | `frontends/default/src/routes/service/developer/index.tsx`、`.../$clientId.tsx` | — | optional — 平台对公众开放应用登记时才需要 |
+| OIDC | 开发者中心：client secret 一次性展示 / 轮换（宽限期或立即作废） | player | `createClient` / `rotateSecret` 返回 `OidcClientWithSecretDto.client_secret`（只出现一次，之后无法再查） | `frontends/default/src/components/oidc/shared.tsx`（`OneTimeSecretDialog`） | — | optional（实现开发者中心时 required）— 不得缓存或再次展示 secret |
+| OIDC | 管理员审核：批准 / 拒绝 / 封禁 / 解封、PKCE 豁免 | admin | `client.admin.oidc_clients.fetch`、`approve`、`reject`、`suspend`、`reinstate`、`setRequirePkce`（`OidcAdminClientDto`） | `frontends/default/src/routes/admin/oidc_clients.tsx` | — | required（OIDC 启用且 `require_client_approval = true` 时）— 否则新应用永远停在待审批 |
 
 ## 选手端：账号与社区内容
 

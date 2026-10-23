@@ -117,3 +117,145 @@ impl RateGate for MemoryGate {
 pub fn provider(config: OidcConfig, keys: KeyRing) -> OidcProvider {
     OidcProvider::new(config, keys, Arc::new(MemoryGate::default()))
 }
+
+// ── 浏览器模拟辅助 ─────────────────────────────────────────────────────────
+
+use actix_web::{body::MessageBody, dev::ServiceResponse};
+
+pub fn enc(v: &str) -> String {
+    url::form_urlencoded::byte_serialize(v.as_bytes()).collect()
+}
+
+pub fn form(pairs: &[(&str, &str)]) -> String {
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{}={}", enc(k), enc(v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+pub fn query_of(location: &str) -> HashMap<String, String> {
+    let url = url::Url::parse(&format!("https://x{location}"))
+        .or_else(|_| url::Url::parse(location))
+        .unwrap();
+    url.query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect()
+}
+
+pub fn location(resp: &ServiceResponse<impl MessageBody>) -> String {
+    resp.headers()
+        .get("location")
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default()
+}
+
+pub fn hidden(html: &str, name: &str) -> String {
+    let marker = format!("name=\"{name}\" value=\"");
+    let start = html
+        .find(&marker)
+        .unwrap_or_else(|| panic!("no hidden {name} in page"))
+        + marker.len();
+    let end = html[start..].find('"').unwrap() + start;
+    html[start..end].to_string()
+}
+
+/// 最小浏览器：只保存 Cookie。
+#[derive(Default, Clone)]
+pub struct Browser {
+    pub cookies: HashMap<String, String>,
+}
+
+impl Browser {
+    pub fn absorb(&mut self, resp: &ServiceResponse<impl MessageBody>) {
+        for cookie in resp.response().cookies() {
+            if cookie.max_age().is_some_and(|a| a.is_zero()) || cookie.value().is_empty() {
+                self.cookies.remove(cookie.name());
+            } else {
+                self.cookies
+                    .insert(cookie.name().to_string(), cookie.value().to_string());
+            }
+        }
+    }
+
+    pub fn header(&self) -> String {
+        self.cookies
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
+// ── 完整平台 app_data（平台登录等使用 ReqCtx 的处理器需要）──────────────────
+
+/// 惰性 Docker 客户端：bollard 只要求路径存在，测试中永远不会真正调用 Docker。
+pub fn lazy_docker() -> bollard::Docker {
+    let path = std::env::temp_dir().join("floatctf-oidc-tests-docker.sock");
+    if !path.exists() {
+        std::fs::write(&path, b"").unwrap();
+    }
+    bollard::Docker::connect_with_unix(path.to_str().unwrap(), 5, bollard::API_DEFAULT_VERSION)
+        .unwrap()
+}
+
+/// 构造与 bootstrap 相同形状的 `AppState`（Docker/S3/Redis 客户端均为惰性连接，不会被访问）。
+pub fn app_state(
+    db: sea_orm::DatabaseConnection,
+) -> actix_web::web::Data<floatctf::bootstrap::AppState> {
+    use floatctf::infrastructure::LogService;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [database]
+        url = "postgres://unused/db"
+        [auth]
+        jwt_secret = "oidc-management-test-jwt-secret"
+        [redis]
+        url = "redis://127.0.0.1:1/"
+        [rustfs]
+        endpoint_url = "http://127.0.0.1:1"
+        access_key_id = "a"
+        secret_access_key = "s"
+        region = "local"
+        "#,
+    )
+    .unwrap();
+    let config = Arc::new(floatctf::core::AppConfig::from_file(&path).unwrap());
+    let docker = lazy_docker();
+    let s3 = aws_sdk_s3::Client::from_conf(
+        aws_sdk_s3::Config::builder()
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .region(aws_sdk_s3::config::Region::new("local"))
+            .endpoint_url("http://127.0.0.1:1")
+            .build(),
+    );
+    let redis = redis::Client::open("redis://127.0.0.1:1/").unwrap();
+    let web_db = actix_web::web::Data::new(db.clone());
+    let log = LogService::new(web_db.clone());
+    let scheduler = floatctf::scheduler::TaskScheduler::new(
+        web_db,
+        actix_web::web::Data::new(docker.clone()),
+        actix_web::web::Data::new(s3.clone()),
+        log.clone(),
+    );
+    actix_web::web::Data::new(floatctf::bootstrap::AppState::new(
+        config,
+        db,
+        docker,
+        s3,
+        redis.clone(),
+        log.clone(),
+        floatctf::infrastructure::audit::AuditService::new(log),
+        Arc::new(floatctf::infrastructure::realtime::RecordingEventPublisher::new()),
+        Arc::new(scheduler),
+        Arc::new(
+            floatctf::modules::platform::operations::terminal::TerminalTicketStore::new(
+                std::time::Duration::from_secs(60),
+                redis,
+            ),
+        ),
+    ))
+}

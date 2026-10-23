@@ -39,6 +39,79 @@ pub fn service_routes() -> Vec<Route> {
             auth: Auth::UserRequired,
             json_body: false,
         },
+        // ── OIDC：SSO 桥接、开发者中心、已授权应用 ──
+        Route {
+            method: Method::Post,
+            path: "/api/users/sso",
+            auth: Auth::UserRequired,
+            json_body: false,
+        },
+        Route {
+            method: Method::Get,
+            path: "/api/oidc/provider",
+            auth: Auth::UserRequired,
+            json_body: false,
+        },
+        Route {
+            method: Method::Get,
+            path: "/api/oidc/clients",
+            auth: Auth::UserRequired,
+            json_body: false,
+        },
+        Route {
+            method: Method::Post,
+            path: "/api/oidc/clients",
+            auth: Auth::UserRequired,
+            json_body: true,
+        },
+        Route {
+            method: Method::Get,
+            path: p("/api/oidc/clients/{id}"),
+            auth: Auth::UserRequired,
+            json_body: false,
+        },
+        Route {
+            method: Method::Patch,
+            path: p("/api/oidc/clients/{id}"),
+            auth: Auth::UserRequired,
+            json_body: true,
+        },
+        Route {
+            method: Method::Post,
+            path: p("/api/oidc/clients/{id}/secret"),
+            auth: Auth::UserRequired,
+            json_body: true,
+        },
+        Route {
+            method: Method::Post,
+            path: p("/api/oidc/clients/{id}/disable"),
+            auth: Auth::UserRequired,
+            json_body: false,
+        },
+        Route {
+            method: Method::Post,
+            path: p("/api/oidc/clients/{id}/enable"),
+            auth: Auth::UserRequired,
+            json_body: false,
+        },
+        Route {
+            method: Method::Delete,
+            path: p("/api/oidc/clients/{id}"),
+            auth: Auth::UserRequired,
+            json_body: false,
+        },
+        Route {
+            method: Method::Get,
+            path: "/api/oidc/authorizations",
+            auth: Auth::UserRequired,
+            json_body: false,
+        },
+        Route {
+            method: Method::Delete,
+            path: p("/api/oidc/authorizations/{id}"),
+            auth: Auth::UserRequired,
+            json_body: false,
+        },
         Route {
             method: Method::Patch,
             path: "/api/users/me",
@@ -638,6 +711,43 @@ pub fn admin_routes() -> Vec<Route> {
         Route {
             method: Method::Delete,
             path: p("/api/admin/challenge_sets/{id}/challenges"),
+            auth: Auth::SuperAdminRequired,
+            json_body: true,
+        },
+        // ── OIDC：应用审核 ──
+        Route {
+            method: Method::Get,
+            path: "/api/admin/oidc/clients",
+            auth: Auth::SuperAdminRequired,
+            json_body: false,
+        },
+        Route {
+            method: Method::Post,
+            path: p("/api/admin/oidc/clients/{id}/approve"),
+            auth: Auth::SuperAdminRequired,
+            json_body: true,
+        },
+        Route {
+            method: Method::Post,
+            path: p("/api/admin/oidc/clients/{id}/reject"),
+            auth: Auth::SuperAdminRequired,
+            json_body: true,
+        },
+        Route {
+            method: Method::Post,
+            path: p("/api/admin/oidc/clients/{id}/suspend"),
+            auth: Auth::SuperAdminRequired,
+            json_body: true,
+        },
+        Route {
+            method: Method::Post,
+            path: p("/api/admin/oidc/clients/{id}/reinstate"),
+            auth: Auth::SuperAdminRequired,
+            json_body: true,
+        },
+        Route {
+            method: Method::Patch,
+            path: p("/api/admin/oidc/clients/{id}/pkce"),
             auth: Auth::SuperAdminRequired,
             json_body: true,
         },
