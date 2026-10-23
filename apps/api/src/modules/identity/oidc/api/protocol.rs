@@ -291,11 +291,31 @@ pub async fn login_page(
     }
 }
 
-/// 登录尝试限流：同一用户名 10 次/5 分钟，同一来源 IP 50 次/5 分钟（Redis 故障 fail-closed）。
-async fn login_rate_ok(oidc: &OidcProvider, username: &str, ip: &str) -> Result<bool, String> {
+/// 登录尝试限流（Redis 共享窗口，故障 fail-closed），5 分钟窗口：
+/// 同一用户名默认 10 次、同一来源 IP 默认 50 次；运维可在设置表调整
+/// `OIDC_LOGIN_RATE_PER_USER` / `OIDC_LOGIN_RATE_PER_IP`（缺省或非法时用默认值）。
+async fn login_rate_ok(
+    db: &sea_orm::DatabaseConnection,
+    oidc: &OidcProvider,
+    username: &str,
+    ip: &str,
+) -> Result<bool, String> {
+    let limit = |key: &'static str, default: u32| async move {
+        crate::infrastructure::get_setting(db, key)
+            .await
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(default)
+    };
+    let per_user = limit("OIDC_LOGIN_RATE_PER_USER", 10).await;
+    let per_ip = limit("OIDC_LOGIN_RATE_PER_IP", 50).await;
     let user_key = secret::sha256_hex(&username.to_lowercase());
-    Ok(oidc.rate.hit("oidc_login_user", &user_key, 10, 300).await?
-        && oidc.rate.hit("oidc_login_ip", ip, 50, 300).await?)
+    Ok(oidc
+        .rate
+        .hit("oidc_login_user", &user_key, per_user, 300)
+        .await?
+        && oidc.rate.hit("oidc_login_ip", ip, per_ip, 300).await?)
 }
 
 /// POST /oauth/login
@@ -375,7 +395,7 @@ pub async fn login_submit(
         .await;
     }
     let ip = LogService::get_client_ip(&req).unwrap_or_else(|| "unknown".into());
-    match login_rate_ok(&oidc, &username, &ip).await {
+    match login_rate_ok(&db, &oidc, &username, &ip).await {
         Ok(true) => {}
         Ok(false) => {
             return render_login(

@@ -145,7 +145,8 @@ passed=795 failed=6 ignored=9
 - PKCE 降级防护：发码时有 `code_challenge` 则兑换必须带正确 `code_verifier`；发码时没有则兑换时出现 `code_verifier` 也拒绝
   （RFC 9700 §2.1.1）。
 - ID Token（RS256，header 含 `kid`、`typ=JWT`）：`iss`、`sub`（`users.id` UUID 字符串）、`aud`（client_id）、`azp`、`exp`、`iat`、
-  `auth_time`（始终提供）、`nonce`（请求带了就原样回显）、`at_hash`，以及已授予 scope 对应的 claims。
+  `auth_time`（始终提供）、`nonce`（请求带了就原样回显）、`at_hash`。profile / email 等资料 claims **只经 UserInfo 返回**
+  （OIDC Core §5.4；Phase 4 OIDF 一致性测试后由「ID Token 也携带」修订为最小披露）。
   不包含 `role`、管理员身份、战队或赛事信息。
 - UserInfo（`GET`/`POST`，Bearer header；`POST` 也接受 form `access_token`）：
   `openid` → `sub`；`profile` → `preferred_username`、`nickname`、`name`、`picture`（有头像时）、`updated_at`；

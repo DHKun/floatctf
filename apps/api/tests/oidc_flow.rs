@@ -384,10 +384,11 @@ async fn confidential_client_full_flow_with_sso_and_consent_memory() {
     assert!(claims["auth_time"].as_i64().unwrap() <= claims["iat"].as_i64().unwrap());
     let expected_at_hash = URL_SAFE_NO_PAD.encode(&Sha256::digest(access_token.as_bytes())[..16]);
     assert_eq!(claims["at_hash"], expected_at_hash);
-    assert_eq!(claims["preferred_username"], alice.username);
+    // 资料 claims 只经 UserInfo 返回，ID Token 保持最小披露（OIDC Core §5.4）。
+    assert!(claims.get("preferred_username").is_none());
     assert!(
         claims.get("email").is_none(),
-        "未授权 email 不得出现在 ID Token"
+        "资料 claims 不得出现在 ID Token"
     );
     for forbidden in ["role", "password", "admin"] {
         assert!(claims.get(forbidden).is_none());
@@ -1378,4 +1379,73 @@ async fn cleanup_removes_only_long_expired_rows() {
         rows.iter().any(|r| r.code_hash == hash(&live_code)),
         "有效授权码保留"
     );
+}
+
+#[actix_web::test]
+async fn oidc_login_is_rate_limited_per_username() {
+    let Some(db) = connect_or_skip().await else {
+        return;
+    };
+    let config = test_config();
+    let app = app!(db, config.clone());
+    let owner = seed_user(&db, "owner").await;
+    let victim = seed_user(&db, "ratelimit").await;
+    let rp = seed_client(&db, &config, owner.id, OidcClientType::Confidential, None).await;
+    // 用设置表把每用户名配额调到 3（同时覆盖"运维可调"路径），结束后恢复原值。
+    let previous = floatctf::infrastructure::get_setting(&db, "OIDC_LOGIN_RATE_PER_USER")
+        .await
+        .ok();
+    floatctf::infrastructure::settings::upsert_setting(&db, "OIDC_LOGIN_RATE_PER_USER", "3")
+        .await
+        .unwrap();
+    let mut b = Browser::default();
+    let resp = get!(app, b, auth_url(&rp, &[]));
+    let login = location(&resp);
+    let mut statuses = Vec::new();
+    for _ in 0..4 {
+        let html = body_string!(get!(app, b, login.clone()));
+        let txn = hidden(&html, "txn");
+        let csrf = hidden(&html, "csrf");
+        let resp = post_form!(
+            app,
+            b,
+            "/oauth/login",
+            &[
+                ("txn", txn.as_str()),
+                ("csrf", csrf.as_str()),
+                ("action", "login"),
+                ("username", victim.username.as_str()),
+                ("password", "wrong-password")
+            ]
+        );
+        statuses.push(resp.status().as_u16());
+    }
+    // 配额 3：前 3 次正常校验（口令错误 → 200 + 错误提示），第 4 次被拒绝（429）。
+    assert!(statuses[..3].iter().all(|s| *s == 200), "{statuses:?}");
+    assert_eq!(statuses[3], 429, "{statuses:?}");
+    let html = body_string!(get!(app, b, login.clone()));
+    let resp = post_form!(
+        app,
+        b,
+        "/oauth/login",
+        &[
+            ("txn", hidden(&html, "txn").as_str()),
+            ("csrf", hidden(&html, "csrf").as_str()),
+            ("action", "login"),
+            ("username", victim.username.as_str()),
+            ("password", PASSWORD)
+        ]
+    );
+    assert_eq!(resp.status(), 429);
+    assert!(
+        !b.cookies.keys().any(|k| k.contains("sso")),
+        "限流期间不得建立会话"
+    );
+    floatctf::infrastructure::settings::upsert_setting(
+        &db,
+        "OIDC_LOGIN_RATE_PER_USER",
+        previous.as_deref().unwrap_or("10"),
+    )
+    .await
+    .unwrap();
 }

@@ -1,0 +1,129 @@
+# FloatCTF OIDC Provider —— 部署与运维手册
+
+适用于 `oidc` 分支引入的 OpenID Connect Provider。默认 **关闭**（`[oidc].enabled = false`），关闭时平台行为与之前完全一致。
+
+## 1. 开启前检查清单
+
+- [ ] 站点已经是 **HTTPS**，并且有固定域名（issuer 不能是 IP、不能随 `Host` 变化）。
+- [ ] 已执行包含迁移 `20261023162115-oidc-provider.sql` 的版本（`mise run db:migration:status` 显示 APPLIED）。
+- [ ] Caddy 已把 `/oauth/*` 与三个 `/.well-known/*` 文档反代到 API（安装器模板与 `infra/caddy/*` 已包含；自定义代理需自行添加）。
+- [ ] Redis 正常（登录 / token 限流 fail-closed，Redis 故障时 OIDC 登录会被拒绝）。
+- [ ] 已准备好签名私钥并决定 `kid`。
+
+## 2. 生成签名 key
+
+```bash
+# 生产（安装器已创建 $FLOATCTF_HOME/config/oidc，容器内只读挂载为 /etc/floatctf/oidc）
+sudo scripts/oidc-keygen.sh /var/lib/floatctf/config/oidc oidc-2026-10-a
+sudo chown root:floatctf /var/lib/floatctf/config/oidc/oidc-2026-10-a.pem
+sudo chmod 0640 /var/lib/floatctf/config/oidc/oidc-2026-10-a.pem
+
+# 本地开发（/app 已被 gitignore）
+scripts/oidc-keygen.sh app/secrets/oidc dev-key-1
+```
+
+- RSA 3072 位 PKCS#8 PEM；脚本拒绝覆盖已有文件，并打印公钥指纹用于登记。
+- 私钥**不要**提交 Git、不要写进数据库、不要放进 TOML 正文。备份时与其它密钥同等保护。
+- API 容器以 `65532:floatctf` 运行，私钥需对 `floatctf` 组可读（0640）。权限对其他用户可读时 API 会在日志告警。
+
+## 3. 配置
+
+```toml
+[oidc]
+enabled = true
+issuer = "https://ctf.example.com"          # 必须与浏览器看到的 origin 逐字节一致，无尾斜杠、无路径
+require_client_approval = true              # 新应用需管理员审批（建议保持）
+# allow_loopback_redirect_uris = false      # 仅开发 / 原生应用测试时开启
+# session_ttl_secs = 28800                  # SSO 会话 8h
+# authorization_code_ttl_secs = 60          # ≤ 120
+# access_token_ttl_secs = 3600
+# id_token_ttl_secs = 3600
+# transaction_ttl_secs = 600
+# secret_rotation_grace_secs = 86400        # client secret 轮换宽限期
+
+[[oidc.signing_keys]]
+kid = "oidc-2026-10-a"
+private_key_file = "/etc/floatctf/oidc/oidc-2026-10-a.pem"   # 相对路径以 TOML 所在目录为基准
+active = true
+```
+
+启动期严格校验（任一失败 → API 拒绝启动，日志 `OIDC provider initialization failed` / `configuration error`）：
+issuer 形态、恰好一把 `active` key、`kid` 唯一且只含 `[A-Za-z0-9._-]`、私钥可读且为 2048–4096 位 RSA、TTL 范围。
+**不会**临时生成 key。
+
+运行期可调（设置表，管理端「Settings」或 SQL，缓存 60 秒）：
+
+| Key | 默认 | 含义 |
+|-----|------|------|
+| `OIDC_LOGIN_RATE_PER_USER` | 10 | 同一用户名 5 分钟内 OIDC 登录尝试次数 |
+| `OIDC_LOGIN_RATE_PER_IP` | 50 | 同一来源 IP 5 分钟内 OIDC 登录尝试次数 |
+
+## 4. 上线自检
+
+```bash
+ISSUER=https://ctf.example.com
+curl -fsS $ISSUER/.well-known/openid-configuration | jq '.issuer, .authorization_endpoint, .jwks_uri'
+curl -fsS $ISSUER/.well-known/jwks.json | jq '.keys[] | {kid, kty, alg, use, has_private: has("d")}'   # has_private 必须为 false
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' "$ISSUER/oauth/authorize"                 # 400 text/html（不是 SPA 的 200）
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $ISSUER/oauth/token                                # 400（JSON 错误）
+```
+
+- `issuer` 字段必须与 `$ISSUER` 完全一致；所有端点 URL 以它开头。
+- 如果 `/.well-known/openid-configuration` 返回 HTML，说明反代把它交给了前端 SPA，检查 Caddy 规则顺序。
+- 管理员在「Admin → Access → OIDC Clients」审批应用；玩家在「Account → Developer Apps / Authorized Apps」管理。
+
+## 5. 签名 key 常规轮换（零停机）
+
+ID Token 默认 1 小时有效，JWKS 允许 RP 缓存 5 分钟。按下列步骤，旧令牌在过期前始终可验：
+
+1. **预发布**新 key：生成 `oidc-2027-01-a`，在 TOML 中追加为 `active = false`，滚动重启所有 API 副本。
+   JWKS 现在同时包含新旧公钥；签发仍用旧 key。
+2. 等待 ≥ JWKS 缓存时间（5 分钟，若 RP 缓存更久则按其最长值）。
+3. **切换**：新 key `active = true`、旧 key `active = false`，滚动重启。新 ID Token 的 `kid` 变为新 key；旧令牌仍可用旧公钥验证。
+4. 等待 ≥ `id_token_ttl_secs` + JWKS 缓存时间。
+5. **退役**：从 TOML 删除旧 key，重启；归档或销毁旧私钥文件。
+
+多副本必须读取同一组 key 文件、同一份 `[[oidc.signing_keys]]` 配置；任一副本的 JWKS 不一致都会导致 RP 间歇性验签失败。
+
+## 6. 紧急轮换（私钥疑似泄露）
+
+1. 立即生成新 key，TOML 中 **删除** 泄露的 key（不要保留为 inactive），新 key `active = true`，重启所有副本。
+2. 泄露 key 签发的 ID Token 将因 `kid` 不在 JWKS 中而验签失败（RP 刷新 JWKS 后生效，最长约 5 分钟）。
+3. 通知接入方：要求用户重新登录、检查期间可疑登录。access token 不依赖签名 key，如需一并作废，
+   可在数据库执行 `UPDATE oidc_access_tokens SET revoked_at = now() WHERE revoked_at IS NULL;`。
+4. 记录事件、复盘私钥存放与访问控制。
+
+平台 API 的 HS512 `auth.jwt_secret` 与 OIDC key 完全独立；轮换任何一方都不影响另一方。
+
+## 7. 日志与审计
+
+- 管理端「Logs」中 `category = OIDC`：`OIDC_LOGIN` / `OIDC_LOGIN_FAILED` / `OIDC_CONSENT_GRANT` / `OIDC_CONSENT_DENY` /
+  `OIDC_CONSENT_REVOKE` / `OIDC_TOKEN` / `OIDC_TOKEN_REJECTED` / `OIDC_CLIENT_*` / `OIDC_SECRET_ROTATE`。
+- 日志只含 `client_id`、scope、错误码等元数据；不记录 code、token、secret、密码、PKCE verifier。
+- 授权码重放会额外打出 `OIDC authorization code replay detected` 警告。
+
+## 8. 数据清理与容量
+
+- 系统定时任务 `identity.oidc.cleanup`（每 10 分钟，管理端「Scheduled Tasks」可见）删除过期 1 天以上的
+  授权事务、授权码、access token，以及过期或撤销 7 天以上的 SSO 会话。
+- 表：`oidc_clients`、`oidc_consents`（长期）；`oidc_browser_sessions`、`oidc_auth_transactions`、
+  `oidc_authorization_codes`、`oidc_access_tokens`（短期）。
+
+## 9. 回滚
+
+1. 首选：`[oidc].enabled = false` 并重启。协议端点立即 404，平台登录不再写 SSO Cookie，其它功能不变。
+   RP 现有登录会话由 RP 自己管理，不受影响；access token 在关闭期间无法使用。
+2. 数据保留，不回滚迁移；重新开启后应用与授权记录仍在。
+3. 停止某个应用：管理员「封禁」，或所有者「暂停」。
+
+## 10. 故障排查
+
+| 症状 | 排查 |
+|------|------|
+| API 启动失败 `OIDC provider initialization failed` | 私钥路径（容器内路径）、文件权限、PEM 是否加密、kid 是否匹配 |
+| RP 报 `issuer mismatch` | TOML issuer 与 RP 配置 / 浏览器 origin 不一致（http/https、端口、尾斜杠） |
+| 登录页提交后显示「请求来源无效」 | 反代改写了 `Origin`，或页面不是从 issuer origin 打开 |
+| 登录总提示「尝试次数过多」 | 限流命中；检查是否有撞库，必要时调高设置或等待 5 分钟 |
+| 登录页提示「服务暂时不可用」 | Redis 不可达（限流 fail-closed） |
+| 已登录 FloatCTF 仍要求输入密码 | 浏览器没有 SSO Cookie：确认平台与 `/oauth/*` 同源；旧会话在进入选手区时会自动桥接 |
+| 授权页提示「授权请求已过期或无效」 | 事务超过 10 分钟、已完成，或在另一个浏览器中继续 |
