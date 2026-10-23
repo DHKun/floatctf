@@ -49,3 +49,7 @@ export {
 	type DiscussionServiceApi,
 	type DiscussionWithAuthor,
 } from "./discussions.js";
+export {
+	createOidcServiceApi,
+	type OidcServiceApi,
+} from "./oidc.js";

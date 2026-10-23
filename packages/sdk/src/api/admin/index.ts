@@ -93,3 +93,7 @@ export {
 	type ImageInfo,
 	type NetworkInfo,
 } from "./docker.js";
+export {
+	createOidcClientAdminApi,
+	type OidcClientAdminApi,
+} from "./oidc_clients.js";

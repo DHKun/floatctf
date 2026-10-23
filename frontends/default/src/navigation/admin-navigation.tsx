@@ -69,6 +69,10 @@ export const adminNavigation: NavigationSection[] = [
 			item("access.users", "Users", "/admin/users", {
 				icon: <PasskeyFillIcon />,
 			}),
+			// 第三方应用通过 FloatCTF 账号登录（OIDC）的审核。
+			item("access.oidc-clients", "OIDC Clients", "/admin/oidc_clients", {
+				icon: <KeyIcon />,
+			}),
 		],
 	},
 	{

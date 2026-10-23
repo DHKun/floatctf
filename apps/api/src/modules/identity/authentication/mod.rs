@@ -40,8 +40,16 @@ pub(crate) async fn verify_user_credentials(
 }
 
 /// POST /api/users/session
+///
+/// 响应体与引入 OIDC 前逐字一致（`UniResponse<String>`，data 为平台 JWT）。
+/// OIDC Provider 启用时额外下发第一方 SSO Cookie，使已登录 FloatCTF 的浏览器
+/// 授权第三方应用时无需再次输入密码。Cookie 建立失败不影响平台登录本身。
 #[post("/session")]
-pub async fn user_login(ctx: ReqCtx, ulr: Json<UserLoginRequest>) -> UniResult<String> {
+pub async fn user_login(
+    ctx: ReqCtx,
+    oidc: Option<crate::modules::identity::oidc::WebOidc>,
+    ulr: Json<UserLoginRequest>,
+) -> Result<actix_web::HttpResponse, AppError> {
     let ulr = ulr.into_inner();
 
     match verify_user_credentials(ctx.db.get_ref(), &ulr.username, &ulr.password).await? {
@@ -61,7 +69,23 @@ pub async fn user_login(ctx: ReqCtx, ulr: Json<UserLoginRequest>) -> UniResult<S
             let jwt = gen_jwt_token(user.id, Role::User, None)
                 .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-            UniResponse::ok(jwt.into()).into()
+            let mut response = actix_web::HttpResponse::Ok();
+            if let Some(oidc) = oidc {
+                match crate::modules::identity::oidc::api::session::establish_after_password_login(
+                    ctx.db.get_ref(),
+                    &oidc,
+                    &ctx.req,
+                    user.id,
+                )
+                .await
+                {
+                    Ok(cookie) => {
+                        response.cookie(cookie);
+                    }
+                    Err(e) => warn!(error = %e, "SSO session not established after login"),
+                }
+            }
+            Ok(response.json(UniResponse::ok(Some(jwt))))
         }
         (Some(user), false) => {
             ctx.log
@@ -76,9 +100,9 @@ pub async fn user_login(ctx: ReqCtx, ulr: Json<UserLoginRequest>) -> UniResult<S
                     Some(&ctx.req),
                 )
                 .await;
-            AppError::Unauthorized.into()
+            Err(AppError::Unauthorized)
         }
-        (None, _) => AppError::Unauthorized.into(),
+        (None, _) => Err(AppError::Unauthorized),
     }
 }
 

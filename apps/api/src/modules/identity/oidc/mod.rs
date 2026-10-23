@@ -88,6 +88,33 @@ pub fn configure_protocol_routes(cfg: &mut ServiceConfig) {
         .service(api::protocol::logout);
 }
 
+/// 开发者中心与用户授权管理（挂在 `/api/oidc` 下，玩家 JWT）。
+pub fn configure_developer_routes(cfg: &mut ServiceConfig) {
+    use api::developer::*;
+    cfg.service(provider_info)
+        .service(list_my_clients)
+        .service(create_client)
+        .service(get_my_client)
+        .service(update_my_client)
+        .service(rotate_my_secret)
+        .service(disable_my_client)
+        .service(enable_my_client)
+        .service(delete_my_client)
+        .service(list_my_authorizations)
+        .service(revoke_my_authorization);
+}
+
+/// 管理员审核（挂在 `/api/admin/oidc` 下，超管 JWT）。
+pub fn configure_admin_routes(cfg: &mut ServiceConfig) {
+    use api::developer::*;
+    cfg.service(admin_list_clients)
+        .service(admin_approve)
+        .service(admin_reject)
+        .service(admin_suspend)
+        .service(admin_reinstate)
+        .service(admin_set_pkce);
+}
+
 /// 浏览器端 RP 需要跨域访问、且不读取 Cookie 的协议路径（CORS 对任意 Origin 开放）。
 pub fn is_public_cors_path(path: &str) -> bool {
     use domain::metadata::*;

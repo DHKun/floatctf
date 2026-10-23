@@ -24,8 +24,14 @@ pub fn configure_player_routes(cfg: &mut ServiceConfig) {
             // POST /api/users/reset_password
             .service(authentication::send_reset_email)
             // POST /api/users/reset?token=...
-            .service(authentication::reset_password),
+            .service(authentication::reset_password)
+            // POST /api/users/sso（平台 JWT → OIDC SSO Cookie）
+            .service(oidc::api::session::bridge)
+            // DELETE /api/users/sso（撤销 SSO 会话）
+            .service(oidc::api::session::sign_out),
     );
+    // /api/oidc/*：开发者中心 + 已授权应用
+    cfg.service(web::scope("/oidc").configure(oidc::configure_developer_routes));
 }
 
 /// 超管会话路由（`/api` 下）：
@@ -65,6 +71,9 @@ pub fn configure_admin_routes(cfg: &mut ServiceConfig) {
             // GET /api/admin/super_admin/{super_admin_id}
             .service(administrator::get_super_admin),
     );
+
+    // /api/admin/oidc/*：OIDC 应用审核
+    cfg.service(web::scope("/oidc").configure(oidc::configure_admin_routes));
 }
 
 /// 账号字段校验（公开注册与管理端建号/改号共用）。

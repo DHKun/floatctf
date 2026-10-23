@@ -4,7 +4,7 @@ import { useAuthStore } from "@/stores/AuthStore";
 import { Button } from "@primer/react";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { userServiceApi } from "@/api";
+import { serviceApi, userServiceApi } from "@/api";
 
 export interface GenericHeaderProps
 	extends React.HTMLAttributes<HTMLDivElement> {
@@ -113,6 +113,8 @@ export const ServiceHeader = () => {
 			showUserInfo
 			useProfileQuery
 			onLogout={() => {
+				// 同时撤销服务端 SSO 会话（OIDC 第一方登录态）；失败不阻塞本地登出。
+				void serviceApi.oidc.endSso().catch(() => undefined);
 				authStore.removeToken();
 				appNavigate({ to: "/" });
 			}}

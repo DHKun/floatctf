@@ -9,9 +9,7 @@
 
 mod oidc_support;
 
-use std::collections::HashMap;
-
-use actix_web::{App, body::MessageBody, dev::ServiceResponse, test, web};
+use actix_web::{App, dev::ServiceResponse, test, web};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, jwk::JwkSet};
 use oidc_support::*;
@@ -117,18 +115,6 @@ fn basic(client: &TestClient) -> String {
     )
 }
 
-fn enc(v: &str) -> String {
-    url::form_urlencoded::byte_serialize(v.as_bytes()).collect()
-}
-
-fn form(pairs: &[(&str, &str)]) -> String {
-    pairs
-        .iter()
-        .map(|(k, v)| format!("{}={}", enc(k), enc(v)))
-        .collect::<Vec<_>>()
-        .join("&")
-}
-
 fn auth_url(client: &TestClient, extra: &[(&str, &str)]) -> String {
     let mut pairs = vec![
         ("response_type", "code"),
@@ -147,59 +133,6 @@ fn auth_url(client: &TestClient, extra: &[(&str, &str)]) -> String {
         }
     }
     format!("/oauth/authorize?{}", form(&pairs))
-}
-
-fn query_of(location: &str) -> HashMap<String, String> {
-    let url = url::Url::parse(&format!("https://x{location}"))
-        .or_else(|_| url::Url::parse(location))
-        .unwrap();
-    url.query_pairs()
-        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-        .collect()
-}
-
-fn location(resp: &ServiceResponse<impl MessageBody>) -> String {
-    resp.headers()
-        .get("location")
-        .map(|v| v.to_str().unwrap().to_string())
-        .unwrap_or_default()
-}
-
-fn hidden(html: &str, name: &str) -> String {
-    let marker = format!("name=\"{name}\" value=\"");
-    let start = html
-        .find(&marker)
-        .unwrap_or_else(|| panic!("no hidden {name} in page"))
-        + marker.len();
-    let end = html[start..].find('"').unwrap() + start;
-    html[start..end].to_string()
-}
-
-/// 最小浏览器：只保存 Cookie。
-#[derive(Default, Clone)]
-struct Browser {
-    cookies: HashMap<String, String>,
-}
-
-impl Browser {
-    fn absorb(&mut self, resp: &ServiceResponse<impl MessageBody>) {
-        for cookie in resp.response().cookies() {
-            if cookie.max_age().is_some_and(|a| a.is_zero()) || cookie.value().is_empty() {
-                self.cookies.remove(cookie.name());
-            } else {
-                self.cookies
-                    .insert(cookie.name().to_string(), cookie.value().to_string());
-            }
-        }
-    }
-
-    fn header(&self) -> String {
-        self.cookies
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>()
-            .join("; ")
-    }
 }
 
 macro_rules! app {

@@ -59,7 +59,9 @@ pub fn html(
         ))
         .insert_header(("X-Frame-Options", "DENY"))
         .insert_header(("X-Content-Type-Options", "nosniff"))
-        .insert_header(("Referrer-Policy", "no-referrer"))
+        // 不能用 no-referrer：按 Fetch 规范，该策略会让浏览器在表单 POST 时发送 `Origin: null`，
+        // 同源校验因此拒绝合法提交（真实浏览器 E2E 发现）。same-origin 仍不向 RP 泄露 Referer。
+        .insert_header(("Referrer-Policy", "same-origin"))
         .insert_header(("Cache-Control", "no-store"))
         .insert_header(("Pragma", "no-cache"))
         .body(body)
@@ -142,6 +144,13 @@ mod tests {
     }
 
     #[test]
+    fn layout_does_not_force_null_origin_on_form_posts() {
+        let layout = include_str!("../templates/layout.html");
+        assert!(!layout.contains("no-referrer"));
+        assert!(layout.contains(r#"<meta name="referrer" content="same-origin">"#));
+    }
+
+    #[test]
     fn email_not_preselected_unless_previously_granted() {
         assert!(!scope_item("email", false).unwrap().checked);
         assert!(scope_item("email", true).unwrap().checked);
@@ -166,6 +175,11 @@ mod tests {
         assert!(csp.contains("form-action 'self' https://rp.example.com;"));
         assert!(csp.contains("frame-ancestors 'none'"));
         assert!(!csp.contains("script-src"));
+        // 回归：no-referrer 会让浏览器表单 POST 带 `Origin: null`，导致同源校验误拒。
+        assert_eq!(
+            resp.headers().get("Referrer-Policy").unwrap(),
+            "same-origin"
+        );
         assert_eq!(
             origin_of("https://rp.example.com:8443/cb?x=1").unwrap(),
             "https://rp.example.com:8443"
