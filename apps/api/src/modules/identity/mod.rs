@@ -3,6 +3,7 @@
 pub mod administrator;
 pub mod authentication;
 pub mod authorization;
+pub mod oidc;
 pub mod user;
 
 use actix_web::web::{self, ServiceConfig};

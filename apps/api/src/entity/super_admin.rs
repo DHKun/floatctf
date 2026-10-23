@@ -30,6 +30,8 @@ pub enum Relation {
     AwdScoreEvents,
     #[sea_orm(has_many = "super::logs::Entity")]
     Logs,
+    #[sea_orm(has_many = "super::oidc_clients::Entity")]
+    OidcClients,
 }
 
 impl Related<super::announcements::Entity> for Entity {
@@ -59,6 +61,12 @@ impl Related<super::awd_score_events::Entity> for Entity {
 impl Related<super::logs::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Logs.def()
+    }
+}
+
+impl Related<super::oidc_clients::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::OidcClients.def()
     }
 }
 
