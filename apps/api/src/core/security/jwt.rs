@@ -39,6 +39,10 @@ pub struct AuthClaims {
     pub sub: Uuid,
     pub role: Role,
     pub exp: usize,
+    /// 签发时间（新令牌必带；本字段引入前签发的旧令牌没有，反序列化为 `None`）。
+    /// OIDC SSO 桥接据此记录真实的认证时间（`auth_time`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iat: Option<usize>,
 }
 
 pub fn gen_jwt_token(
@@ -65,6 +69,7 @@ pub fn gen_jwt_token(
         sub: id,
         role,
         exp: expiration,
+        iat: Some(Utc::now().timestamp() as usize),
     };
 
     encode(
@@ -107,6 +112,37 @@ mod tests {
         let claims = validate_jwt(token).expect("decode");
         assert_eq!(claims.sub, id);
         assert_eq!(claims.role, Role::SuperAdmin);
+    }
+
+    #[test]
+    fn jwt_carries_iat_and_still_accepts_legacy_tokens_without_iat() {
+        configure_jwt_secret(Secret::new("floatctf-test-secret-for-jwt"));
+        let id = Uuid::new_v4();
+        let token = gen_jwt_token(id, Role::User, Some(30)).expect("encode");
+        let claims = validate_jwt(token).expect("decode");
+        let now = Utc::now().timestamp() as usize;
+        assert!(claims.iat.is_some_and(|iat| iat <= now && iat + 5 >= now));
+
+        // 引入 iat 之前签发的令牌（只有 sub/role/exp）必须继续有效。
+        #[derive(Serialize)]
+        struct Legacy {
+            sub: Uuid,
+            role: Role,
+            exp: usize,
+        }
+        let legacy = encode(
+            &Header::new(Algorithm::HS512),
+            &Legacy {
+                sub: id,
+                role: Role::User,
+                exp: now + 600,
+            },
+            &EncodingKey::from_secret(b"floatctf-test-secret-for-jwt"),
+        )
+        .unwrap();
+        let claims = validate_jwt(legacy).expect("legacy token stays valid");
+        assert_eq!(claims.sub, id);
+        assert!(claims.iat.is_none());
     }
 
     #[test]

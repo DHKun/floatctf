@@ -5,6 +5,9 @@ import {
 	useLocation,
 } from "@tanstack/react-router";
 
+import { useEffect } from "react";
+
+import { serviceApi } from "@/api";
 import { HierarchicalSideBar, ServiceHeader } from "@/components";
 import { serviceNavigation } from "@/navigation";
 import { useAuthStore } from "@/stores/AuthStore";
@@ -22,7 +25,23 @@ export const Route = createFileRoute("/service")({
 	component: RouteComponent,
 });
 
+/**
+ * 把已持有的平台 JWT 衔接为服务端 SSO 会话（OIDC 第一方登录态）。
+ *
+ * 新登录时服务端已随 `POST /api/users/session` 下发 Cookie；这里覆盖"本功能上线前就已登录、
+ * 只有 localStorage JWT"的会话。接口幂等，OIDC 未启用时返回 404，均静默忽略。
+ */
+function useSsoBridge() {
+	const token = useAuthStore((s) => s.token);
+	useEffect(() => {
+		if (token) {
+			void serviceApi.oidc.establishSso().catch(() => undefined);
+		}
+	}, [token]);
+}
+
 function RouteComponent() {
+	useSsoBridge();
 	const location = useLocation();
 
 	const hideSidebarPatterns = [/^\/service\/events\/.+/];

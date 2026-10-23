@@ -106,3 +106,15 @@ allowed_origins = []
 [features]
 unsafe_sql_admin = false
 web_terminal = true
+
+# OpenID Connect Provider（FloatCTF 账号登录第三方应用）。默认关闭。
+# 开启步骤与 key 轮换见 docs/identity/oidc-operations.md；私钥放在宿主 $FLOATCTF_HOME/config/oidc/
+# （容器内只读挂载为 /etc/floatctf/oidc），权限 root:floatctf 0640。issuer 必须与站点 https origin 完全一致。
+# [oidc]
+# enabled = true
+# issuer = "https://ctf.example.com"
+# require_client_approval = true
+# [[oidc.signing_keys]]
+# kid = "oidc-20261023-a1b2"
+# private_key_file = "/etc/floatctf/oidc/oidc-20261023-a1b2.pem"
+# active = true

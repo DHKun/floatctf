@@ -15,60 +15,94 @@ pub struct UserLoginRequest {
     password: String,
 }
 
+/// 校验玩家用户名 + 口令（Argon2）。
+///
+/// 返回 `(Some(user), true)` 表示通过；`(Some(user), false)` 表示用户存在但口令错误；
+/// `(None, false)` 表示用户不存在。平台登录接口与 OIDC 第一方登录页共用这一实现。
+pub(crate) async fn verify_user_credentials(
+    db: &sea_orm::DatabaseConnection,
+    username: &str,
+    password: &str,
+) -> Result<(Option<users::Model>, bool), AppError> {
+    let Some(user) = Users::find()
+        .filter(users::Column::Username.eq(username))
+        .one(db)
+        .await?
+    else {
+        return Ok((None, false));
+    };
+    let parsed_hash = PasswordHash::new(&user.password)
+        .map_err(|e| AppError::Internal(format!("Failed to new the PasswordHash: {e}")))?;
+    let verified = Argon2::default()
+        .verify_password(password.as_bytes(), &parsed_hash)
+        .is_ok();
+    Ok((Some(user), verified))
+}
+
 /// POST /api/users/session
+///
+/// 响应体与引入 OIDC 前逐字一致（`UniResponse<String>`，data 为平台 JWT）。
+/// OIDC Provider 启用时额外下发第一方 SSO Cookie，使已登录 FloatCTF 的浏览器
+/// 授权第三方应用时无需再次输入密码。Cookie 建立失败不影响平台登录本身。
 #[post("/session")]
-pub async fn user_login(ctx: ReqCtx, ulr: Json<UserLoginRequest>) -> UniResult<String> {
+pub async fn user_login(
+    ctx: ReqCtx,
+    oidc: Option<crate::modules::identity::oidc::WebOidc>,
+    ulr: Json<UserLoginRequest>,
+) -> Result<actix_web::HttpResponse, AppError> {
     let ulr = ulr.into_inner();
 
-    match Users::find()
-        .filter(users::Column::Username.eq(ulr.username))
-        .one(ctx.db.get_ref())
-        .await?
-    {
-        Some(user) => {
-            let verified = {
-                let parsed_hash = PasswordHash::new(&user.password).map_err(|e| {
-                    AppError::Internal(format!("Failed to new the PasswordHash: {e}"))
-                })?;
-                Argon2::default()
-                    .verify_password(ulr.password.as_bytes(), &parsed_hash)
-                    .is_ok()
-            };
+    match verify_user_credentials(ctx.db.get_ref(), &ulr.username, &ulr.password).await? {
+        (Some(user), true) => {
+            ctx.log
+                .add_log(
+                    "INFO",
+                    "AUTH",
+                    "LOGIN",
+                    format!("{} 登陆成功", user.username).as_str(),
+                    json!([]),
+                    user.id.into(),
+                    None,
+                    Some(&ctx.req),
+                )
+                .await;
+            let jwt = gen_jwt_token(user.id, Role::User, None)
+                .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-            if verified {
-                ctx.log
-                    .add_log(
-                        "INFO",
-                        "AUTH",
-                        "LOGIN",
-                        format!("{} 登陆成功", user.username).as_str(),
-                        json!([]),
-                        user.id.into(),
-                        None,
-                        Some(&ctx.req),
-                    )
-                    .await;
-                let jwt = gen_jwt_token(user.id, Role::User, None)
-                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
-
-                UniResponse::ok(jwt.into()).into()
-            } else {
-                ctx.log
-                    .add_log(
-                        "ERROR",
-                        "AUTH",
-                        "LOGIN",
-                        format!("{} 登陆失败", user.username).as_str(),
-                        json!([]),
-                        user.id.into(),
-                        None,
-                        Some(&ctx.req),
-                    )
-                    .await;
-                AppError::Unauthorized.into()
+            let mut response = actix_web::HttpResponse::Ok();
+            if let Some(oidc) = oidc {
+                match crate::modules::identity::oidc::api::session::establish_after_password_login(
+                    ctx.db.get_ref(),
+                    &oidc,
+                    &ctx.req,
+                    user.id,
+                )
+                .await
+                {
+                    Ok(cookie) => {
+                        response.cookie(cookie);
+                    }
+                    Err(e) => warn!(error = %e, "SSO session not established after login"),
+                }
             }
+            Ok(response.json(UniResponse::ok(Some(jwt))))
         }
-        None => AppError::Unauthorized.into(),
+        (Some(user), false) => {
+            ctx.log
+                .add_log(
+                    "ERROR",
+                    "AUTH",
+                    "LOGIN",
+                    format!("{} 登陆失败", user.username).as_str(),
+                    json!([]),
+                    user.id.into(),
+                    None,
+                    Some(&ctx.req),
+                )
+                .await;
+            Err(AppError::Unauthorized)
+        }
+        (None, _) => Err(AppError::Unauthorized),
     }
 }
 

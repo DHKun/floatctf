@@ -1,0 +1,17 @@
+//! OIDC HTTP 端点。
+
+pub mod developer;
+pub mod discovery;
+pub mod pages;
+pub mod protocol;
+pub mod session;
+
+use actix_web::HttpResponse;
+
+/// `[oidc].enabled = false`：协议端点不存在。
+pub(crate) fn not_enabled() -> HttpResponse {
+    HttpResponse::NotFound().json(crate::api::UniResponse::<()>::err(
+        404,
+        "接口不存在".to_string(),
+    ))
+}

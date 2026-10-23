@@ -26,6 +26,7 @@ export {
 	createEventWriteupAdminApi,
 	createInstanceAdminApi,
 	createLogsAdminApi,
+	createOidcClientAdminApi,
 	createScheduledTaskAdminApi,
 	createSettingAdminApi,
 	createSuperAdminApi,
@@ -39,6 +40,7 @@ export {
 	createDiscussionServiceApi,
 	createEventServiceApi,
 	createInstanceServiceApi,
+	createOidcServiceApi,
 	createSolveServiceApi,
 	createSubmitServiceApi,
 	createUploadsServiceApi,
@@ -81,6 +83,7 @@ import {
 	createEventWriteupAdminApi,
 	createInstanceAdminApi,
 	createLogsAdminApi,
+	createOidcClientAdminApi,
 	createScheduledTaskAdminApi,
 	createSettingAdminApi,
 	createSuperAdminApi,
@@ -97,6 +100,7 @@ import {
 	createDiscussionServiceApi,
 	createEventServiceApi,
 	createInstanceServiceApi,
+	createOidcServiceApi,
 	createSolveServiceApi,
 	createSubmitServiceApi,
 	createUploadsServiceApi,
@@ -134,6 +138,7 @@ export function createAdminApi(http: FloatCTFHttpClient) {
 		docker: createDockerAdminApi(http),
 		dashboard: createDashboardAdminApi(http),
 		super_admin: createSuperAdminApi(http),
+		oidc_clients: createOidcClientAdminApi(http),
 		awd: createAwdAdminApi(http),
 	};
 }
@@ -157,6 +162,7 @@ export function createServiceApi(http: FloatCTFHttpClient) {
 		announcements: createAnnouncementServiceApi(http),
 		discussions: createDiscussionServiceApi(http),
 		uploads: createUploadsServiceApi(http),
+		oidc: createOidcServiceApi(http),
 		awd: createAwdPlayerApi(http),
 	};
 }

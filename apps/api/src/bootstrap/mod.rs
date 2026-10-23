@@ -35,6 +35,8 @@ pub enum BootstrapError {
     Crypto(String),
     #[error("floatctf-helper unavailable: {0}")]
     Helper(String),
+    #[error("OIDC provider initialization failed: {0}")]
+    Oidc(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -259,6 +261,29 @@ pub async fn run() -> Result<(), BootstrapError> {
         terminal_tickets,
     ));
 
+    // OpenID Connect Provider：enabled 时 key ring 必须加载成功（fail closed，不临时生成 key）。
+    let oidc_provider = if config.oidc.enabled {
+        let keys = crate::modules::identity::oidc::keys::KeyRing::load(&config.oidc.signing_keys)
+            .map_err(BootstrapError::Oidc)?;
+        info!(
+            issuer = %config.oidc.issuer,
+            active_kid = %keys.active_kid(),
+            "OIDC provider enabled"
+        );
+        Some(web::Data::new(
+            crate::modules::identity::oidc::OidcProvider::new(
+                config.oidc.clone(),
+                keys,
+                Arc::new(crate::infrastructure::ratelimit::RateLimiter::new(
+                    redis.clone(),
+                )),
+            ),
+        ))
+    } else {
+        info!("OIDC provider disabled ([oidc].enabled = false)");
+        None
+    };
+
     // AWD container runtime + crypto
     let awd_containers: Arc<dyn fcmc::AwdContainerRuntime> =
         Arc::new(fcmc::DockerRuntime::new(docker.get_ref().clone()));
@@ -284,8 +309,13 @@ pub async fn run() -> Result<(), BootstrapError> {
     HttpServer::new(move || {
         let cors = build_cors(&cors_origins);
 
-        App::new()
-            .wrap(Logger::default())
+        let app = App::new();
+        // OIDC 运行时只在启用时注册：协议端点以 `Option<WebOidc>` 判定，未注册即 404。
+        let app = match &oidc_provider {
+            Some(provider) => app.app_data(provider.clone()),
+            None => app,
+        };
+        app.wrap(Logger::default())
             .wrap(TracingLogger::default())
             .wrap(cors)
             // multipart 体积超限默认映射 400 "Payload error"；按 HTTP 语义应为 413
@@ -392,7 +422,12 @@ fn build_cors(allowed_origins: &[String]) -> Cors {
         .allow_any_header()
         .allow_any_method()
         .supports_credentials()
-        .max_age(3600);
+        .max_age(3600)
+        // OIDC Discovery / JWKS / token / userinfo 供任意第三方浏览器端 RP 调用；
+        // 这些端点不读取 Cookie，放开 Origin 不会带来 CSRF 面。授权/登录/同意页不在此列。
+        .allowed_origin_fn(|_origin, head| {
+            crate::modules::identity::oidc::is_public_cors_path(head.uri.path())
+        });
     for origin in allowed_origins {
         cors = cors.allowed_origin(origin.as_str());
     }
