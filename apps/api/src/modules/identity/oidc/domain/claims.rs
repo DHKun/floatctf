@@ -22,7 +22,11 @@ pub struct UserSnapshot {
     pub updated_at: i64,
 }
 
-/// ID Token 的注册 claims（profile/email claims 通过 `extra` 平铺）。
+/// ID Token claims：只含身份与认证会话信息。
+///
+/// profile / email 等资料 claims **只经 UserInfo 返回**（OIDC Core §5.4：签发了 access token 时，
+/// scope 对应的 claims 由 UserInfo 提供）。ID Token 会在 RP 间传递、被记录，最小披露更安全；
+/// OIDF 一致性测试 `EnsureIdTokenDoesNotContainEmailForScopeEmail` 同样要求如此。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdTokenClaims {
     pub iss: String,
@@ -36,8 +40,6 @@ pub struct IdTokenClaims {
     pub nonce: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub at_hash: Option<String>,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
 }
 
 /// `at_hash`：access token ASCII 的 SHA-256 左半部分 base64url（RS256 → SHA-256，§3.1.3.6）。
@@ -47,11 +49,7 @@ pub fn at_hash(access_token: &str) -> String {
 }
 
 /// 按 scope 生成用户 claims（不含 `sub`）。`issuer` 用于把站内相对头像路径变成绝对 URL。
-pub fn scoped_user_claims(
-    user: &UserSnapshot,
-    scopes: &[String],
-    issuer: &str,
-) -> Map<String, Value> {
+fn scoped_user_claims(user: &UserSnapshot, scopes: &[String], issuer: &str) -> Map<String, Value> {
     let mut claims = Map::new();
     if scopes.iter().any(|s| s == scope::PROFILE) {
         claims.insert(

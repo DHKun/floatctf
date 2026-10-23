@@ -477,7 +477,6 @@ pub async fn exchange_code(
         auth_time: code.auth_time.timestamp(),
         nonce: code.nonce.clone(),
         at_hash: Some(claims::at_hash(&access_token)),
-        extra: claims::scoped_user_claims(&snapshot(&user), &granted, oidc.issuer()),
     };
     let id_token = oidc.keys.sign(&id_claims).map_err(|e| {
         tracing::error!(error = %e, "OIDC id_token signing failed");

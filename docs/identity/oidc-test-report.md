@@ -1,0 +1,130 @@
+# OIDC Provider 测试报告（oidc 分支）
+
+- 日期：2026-10-23；基线 `main@7c382e6`；分支 `oidc`
+- 环境：Fedora Linux 宿主；隔离测试栈（独立容器 PostgreSQL 17 / Redis 7 / RustFS，非开发库、非生产）；
+  API 为本分支 debug 构建，`awd.network_runtime = "noop"`，Docker 只接一个仅响应 `_ping` 的桩 socket（本机未安装 floatctf-helper）。
+- **结论边界**：以下均为本地 / 本地 TLS staging 实测，**未部署到任何生产或公网环境**；FloatCTF **未取得** OpenID Foundation 认证。
+
+## 1. 自动化测试
+
+| 套件 | 命令 | 结果 |
+|------|------|------|
+| Rust 单元（oidc / jwt / config 等） | `cargo test -p floatctf --lib -- oidc` | 59 passed（`-- oidc jwt config` 合计 99 passed） |
+| Discovery / JWKS 契约 | `cargo test -p floatctf --test oidc_discovery` | 3 passed |
+| 协议闭环 + 反例矩阵（真实 PostgreSQL） | `DATABASE_URL=… cargo test -p floatctf --test oidc_flow` | 12 passed |
+| SSO / 开发者中心 / 审核（真实 PostgreSQL） | `DATABASE_URL=… cargo test -p floatctf --test oidc_management` | 4 passed |
+| 鉴权契约（运行中的 API） | `FLOATCTF_API_BASE=… FLOATCTF_API_REQUIRE=1 cargo test --test http_auth_contract` | 4 passed；选手 69 / 管理 103 条受保护路由匿名拒绝 |
+| 限流 + 终端 ticket（真实 Redis，串行） | `TEST_REDIS_URL=… cargo test --lib -- redis_tests --test-threads=1` | 8 passed |
+| 全量 Rust 回归 | `scripts/test-rust.sh`（一次性数据库） | 855 passed / 6 failed / 9 ignored（见下） |
+| SDK / frontend-runtime / react / Default Frontend | `pnpm run test:web` | 64 / 109 / 15 / 174 passed |
+| Default Frontend 构建 | `pnpm --filter @floatctf/frontend-default build`（`vite build && tsc --noEmit`） | 通过 |
+| 前端架构边界 | `scripts/check-architecture.sh` | OK |
+| 安装器契约（含 Caddyfile 镜像逐字节一致） | `scripts/test-installer-contract.sh` | 114/114 |
+
+**回归中的 6 个失败**：全部是 `tests/awdp_training.rs`，原因是本机没有本地镜像
+`floatctf/test-g:gamebox-v1.0.3`；在改动前的基线（Phase 0）上同样失败，与 OIDC 无关。
+**已知测试隔离问题（既有）**：设置 `TEST_REDIS_URL` 并行运行时，限流测试与终端 ticket 测试都会 `FLUSHDB` 同一个 Redis，
+偶发互相干扰；串行运行全部通过。
+
+`oidc_flow` 覆盖的反例：授权码重放（并撤销已签发 token）、8 路并发兑换至多成功 1 次、跨 client 兑换、redirect_uri
+不一致 / 缺失、错误 / 缺失 code_verifier、PKCE 降级（无 challenge 却带 verifier）、过期授权码、错误 secret、
+认证方式与登记不符、无客户端认证、非 form 请求、GET 兑换、伪造授权码；未登记回调 / 未知 client / 停用应用不重定向；
+`prompt=none`（login_required / consent_required）、拒绝授权、`max_age=0` 与 `prompt=login` 强制重新认证；
+伪造 access token、ID Token 当 access token、OIDC 令牌访问平台 API、应用禁用 / 授权撤销即时失效；
+CSRF 错误、换浏览器、跨站 Origin、事务重放；登出后服务端撤销；登录限流；过期数据清理。
+
+## 2. 标准客户端互操作（真实 API 二进制）
+
+HTTPS staging：Caddy `tls internal`（客户端以 Caddy 根证书校验 TLS，未关闭校验），issuer `https://localhost:9443`。
+同一用户代理（Cookie jar）依次登录三个 RP：
+
+| RP 库 | 客户端类型 / 认证 | 结果 |
+|-------|------------------|------|
+| Python Authlib 1.3.2（`CodeIDToken` 校验 iss/aud/exp/nonce/at_hash，显式校验 RFC 9207 `iss`） | 机密 / `client_secret_basic` + PKCE | PASS（首次输入密码） |
+| Node openid-client 6.8.8（OpenID 认证 RP 库） | 公开 / `none` + PKCE | PASS，**未再要求密码** |
+| Go coreos/go-oidc v3.11.0 + x/oauth2 v0.24.0 | 机密 / `client_secret_post` + PKCE | PASS，**未再要求密码** |
+
+三者得到相同 `sub`、不同 `aud`；`email_verified=false`。HTTP 本地 issuer 下 Authlib 与 openid-client 同样通过。
+
+**未测**：Supabase Auth（LearnOS 使用）——本次未搭建 GoTrue 环境，不声称兼容，接入前需在其环境实测。
+
+## 3. 真实浏览器 E2E（Playwright Chromium）
+
+拓扑：Caddy（同源反代 `/api/*`、`/oauth/*`、`/.well-known/*` → API，其余 → Default Frontend Vite）+
+Demo RP（Node `http` + openid-client，机密客户端，位于另一个站点 `127.0.0.1:18081`）。
+
+1. 开发者在 Default Frontend「Developer Apps」新建机密应用 → secret 一次性弹窗（截图 `images/developer-secret-once.png`，测试库数据，已作废）。
+2. 管理员在「Admin → OIDC Clients」批准。
+3. 开发者登出：其 SSO 会话在库中标记撤销；页面 JS 读不到 Cookie（`document.cookie === ""`，HttpOnly）。
+4. 选手在 FloatCTF 登录页正常登录 → 打开 Demo RP 点「Sign in with FloatCTF」→ **直接到同意页，没有密码框**
+   （`images/consent-after-floatctf-login.png`）→ 允许 → RP 显示已登录、`iss/sub/aud/auth_time` 正确。
+5. RP 登出后再次登录：不经过任何 FloatCTF 页面，静默完成（已授权 + SSO）。
+6. 「Authorized Apps」撤销（`images/authorized-apps-revoke.png`）→ 再次登录需要重新同意（仍无需密码）。
+7. FloatCTF 登出 → RP 登录进入 OIDC 登录页（需要密码）；登录、同意后成功；`auth_time` 为新的认证时间。
+8. 移动端宽度 + 暗色（`images/login-mobile-dark.png`）、`prompt=login` 提示、取消 → RP 收到 `access_denied`。
+
+此 E2E 发现并修复了一个进程内测试无法暴露的缺陷：页面 `Referrer-Policy: no-referrer` 会让浏览器表单 POST 携带
+`Origin: null`，被同源校验误拒；已改为 `same-origin` 并加回归测试。
+
+## 4. 签名 key 轮换与多实例
+
+| 步骤 | 结果 |
+|------|------|
+| key-1 active、key-2 预发布 | JWKS=[key-1,key-2]；新 ID Token `kid=key-1`，验签通过 |
+| 切换 key-2 active（key-1 保留） | 新 ID Token `kid=key-2`；旧 `kid=key-1` 令牌仍验签通过 |
+| 退役 key-1 | JWKS=[key-2]；`kid=key-1` 令牌被拒，`kid=key-2` 通过 |
+| 两个 API 实例共享 key 文件 | JWKS、Discovery 字节一致 |
+| 平台 HS512 JWT | 不受 OIDC key 轮换影响 |
+| 重启 | JWKS 字节一致（持久化 key，非临时生成） |
+| 缺 key 文件 / 非 loopback 的 http issuer | API 拒绝启动（exit≠0） |
+
+## 5. OpenID Foundation Conformance Suite
+
+- 版本：`registry.gitlab.com/openid/conformance-suite:latest`（镜像 `sha256:efe8fcb9…`，2026-10-23 构建；导出格式 5.3.3），仓库 `1422973`
+- 计划：`oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]`
+- OP：`https://host.docker.internal:9443`（Caddy 内部 CA）；3 个静态客户端（basic ×2、post ×1）；
+  由于该计划的大部分模块不发送 PKCE，测试客户端由管理员 API 设置了 PKCE 豁免（`require_pkce=false`，此时强制 `nonce`）。
+- 结果（35 个模块）：**22 PASSED、4 REVIEW、3 WARNING、5 SKIPPED、1 FAILED**；1663 条成功条件、1 条失败、3 条警告。
+
+| 结果 | 模块 | 说明 |
+|------|------|------|
+| FAILED | `oidcc-ensure-request-without-nonce-succeeds-for-code-flow` | **有意为之**：对豁免 PKCE 的机密客户端，本 OP 要求 `nonce`（RFC 9700 §2.1.1：不用 PKCE 时须用 nonce 防授权码注入）。默认（强制 PKCE）客户端不带 nonce 时只要带 PKCE 即可成功 |
+| REVIEW | `oidcc-prompt-login`、`oidcc-max-age-1` | 套件自动截取了第二次授权时的页面：均为要求重新输入密码的登录页（"该应用要求你重新验证身份"），授权最终成功。需人工审阅确认 |
+| REVIEW | `oidcc-ensure-registered-redirect-uri`、`oidcc-ensure-request-object-with-redirect-uri` | 截取页面为 FloatCTF 错误页"回调地址（redirect_uri）与该应用登记的地址不一致"，**未重定向**。需人工审阅确认 |
+| WARNING | `oidcc-scope-profile` | `profile` 只返回 `preferred_username/nickname/name/picture/updated_at`，没有 `given_name/family_name/...`（平台无此数据） |
+| WARNING | `oidcc-ensure-request-with-acr-values-succeeds` | 不支持 `acr`，ID Token 不含 `acr` |
+| WARNING | `oidcc-claims-essential` | 不支持 `claims` 请求参数（Discovery 已声明 `claims_parameter_supported=false`） |
+| SKIPPED | `oidcc-scope-address`、`oidcc-scope-phone`、`oidcc-scope-all`、`oidcc-refresh-token`、`oidcc-unsigned-request-object-…` | 对应能力未实现且未宣告 |
+| PASSED | 其余 22 个（含 server、userinfo get/post-header/post-body、scope-email、alternate-happy-flow、display、prompt-none ×2、max-age-10000、unknown-parameter、id-token-hint、login-hint、ui/claims-locales、codereuse、codereuse-30seconds、post-request、client-secret-post、valid-pkce） | |
+
+过程中两次修正：首轮运行因测试配置问题（同意页 email 勾选未设为可选、缺 `client_secret_post` 客户端）中断；
+同时根据警告 `EnsureIdTokenDoesNotContainEmailForScopeEmail`，把 ID Token 改为只含身份 claims（资料 claims 只经 UserInfo），
+修改后 `oidcc-scope-email`、`oidcc-alternate-happy-flow` 由 WARNING 变为 PASSED。
+REVIEW 项由本次实施者对照截取的页面源码确认行为正确，**不是** OIDF 官方审阅结论。
+
+## 6. Definition of Done 状态
+
+| DoD 项 | 状态 | 证据 / 缺口 |
+|--------|------|-------------|
+| 通用 OIDC Client 从 Discovery 自动接入，无需私有 SDK | ✅ | §2 三个库只用 issuer/client_id/secret/redirect |
+| 第三方登记 Client、回调与 scope 并获得凭据 | ✅ | §3、`oidc_management` |
+| Authorization Code + PKCE S256，含确认与拒绝 | ✅ | `oidc_flow`、§3 |
+| ID Token `iss/aud/sub/exp/iat/nonce/kid` 正确，JWKS 可验 | ✅ | §2、§4、OIDF `oidcc-server` |
+| UserInfo 按 scope 返回，不含敏感业务数据 | ✅ | `oidc_flow`、OIDF userinfo/scope 测试 |
+| 浏览器真正 SSO | ✅ | §3 第 4 步 |
+| 重放 / 跨 client / 跨 redirect / 错误 PKCE / 过期 fail closed | ✅ | §1 反例 |
+| 用户撤销；开发者只管自己的应用；管理员审核 / 禁用 | ✅ | `oidc_management`、§3 |
+| 旧登录 / JWT / 用户 / 赛事核心无回归 | ✅（有限） | 全量回归与基线一致；赛事业务只经既有自动化测试，未做人工赛事演练 |
+| 单元 / 集成 / HTTP / 浏览器 E2E + ≥2 种外部客户端 | ✅ | §1–§3 |
+| OIDF Conformance Suite 适用项运行并标记未通过项 | ✅ | §5（1 项有意失败、4 项待人工审阅） |
+| 接入文档、错误与示例、部署与 TLS、key 轮换、故障与回滚 | ✅ | `oidc-provider.md`、`oidc-client-integration.md`、`oidc-operations.md` |
+
+## 7. 未解决 / 风险
+
+1. **未在真实公网 HTTPS（ACME 证书、真实域名）上部署验证**；staging 使用 Caddy 内部 CA。生产开启前按 `oidc-operations.md` §4 自检。
+2. Supabase Auth / LearnOS 未实测。
+3. `frontends/floatctf-frontend-shadcn`、`floatctf-frontend-xzmu` 是未检出的 submodule，未改动：若激活这些前端，
+   新登录仍会由服务端下发 SSO Cookie，但需它们自行接入 `establishSso` / `endSso`（见 CAPABILITY-MATRIX OIDC 行）才能覆盖旧会话与登出撤销。
+4. 不支持 Refresh Token、RP-Initiated / Back-Channel Logout、动态注册、Token 撤销 / 内省（未宣告）。
+5. OIDC 登录页的 IP 限流依赖 `X-Forwarded-For` 首段；API 必须只经 Caddy 暴露（生产 Compose 已如此），否则 IP 维度可被伪造（用户名维度不受影响）。
+6. Default Frontend 的 `GenericTable` 在 `disableSelect` 时会连操作列一起去掉（既有行为，本次未修改，新页面避开了该参数）。
