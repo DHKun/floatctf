@@ -1,6 +1,8 @@
 //! OIDC HTTP 端点。
 
 pub mod discovery;
+pub mod pages;
+pub mod protocol;
 
 use actix_web::HttpResponse;
 

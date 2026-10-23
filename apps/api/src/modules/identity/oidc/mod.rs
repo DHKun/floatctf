@@ -11,7 +11,9 @@
 pub mod api;
 pub mod clients;
 pub mod domain;
+pub mod flow;
 pub mod keys;
+pub mod store;
 
 use std::sync::Arc;
 
@@ -75,7 +77,15 @@ pub type WebOidc = web::Data<OidcProvider>;
 pub fn configure_protocol_routes(cfg: &mut ServiceConfig) {
     cfg.service(api::discovery::openid_configuration)
         .service(api::discovery::oauth_authorization_server)
-        .service(api::discovery::jwks);
+        .service(api::discovery::jwks)
+        .service(api::protocol::authorize)
+        .service(api::protocol::login_page)
+        .service(api::protocol::login_submit)
+        .service(api::protocol::consent_page)
+        .service(api::protocol::consent_submit)
+        .service(api::protocol::token)
+        .service(api::protocol::userinfo)
+        .service(api::protocol::logout);
 }
 
 /// 浏览器端 RP 需要跨域访问、且不读取 Cookie 的协议路径（CORS 对任意 Origin 开放）。
