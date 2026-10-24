@@ -1,10 +1,10 @@
-
+import { serviceApi, userServiceApi } from "@/api";
 import { useAppNavigate } from "@/navigation";
 import { useAuthStore } from "@/stores/AuthStore";
+import { getLearnOSUrl } from "@/util";
 import { Button } from "@primer/react";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { serviceApi, userServiceApi } from "@/api";
 
 export interface GenericHeaderProps
 	extends React.HTMLAttributes<HTMLDivElement> {
@@ -80,6 +80,14 @@ export const GenericHeader = ({
 
 			{showUserInfo ? (
 				<div className="flex justify-center items-center gap-2">
+					<a
+						className="btn"
+						href={getLearnOSUrl()}
+						target="_blank"
+						rel="noopener noreferrer"
+					>
+						LearnOS
+					</a>
 					<span
 						className="hover:cursor-pointer hover:underline"
 						onKeyUp={(e) => e.key === "Enter" && handleGoProfile()}

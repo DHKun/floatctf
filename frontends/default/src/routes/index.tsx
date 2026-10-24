@@ -1,4 +1,11 @@
-import { Avatar, Button, FormControl, Heading, TextInput } from "@primer/react";
+import {
+	Avatar,
+	Button,
+	FormControl,
+	Heading,
+	Link,
+	TextInput,
+} from "@primer/react";
 import { useMutation } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useReactive, useTitle } from "ahooks";
@@ -9,6 +16,7 @@ import { useMsgInlineBanner } from "@/components";
 import { AppLink } from "@/navigation";
 import { ServiceRouteGuardWithRedirect } from "@/routes/service/route";
 import { useAuthStore } from "@/stores/AuthStore";
+import { getLearnOSUrl } from "@/util";
 
 export const Route = createFileRoute("/")({
 	component: App,
@@ -114,6 +122,10 @@ function App() {
 			</form>
 
 			<banner.BannerComponent />
+
+			<Link href={getLearnOSUrl()} target="_blank" rel="noopener noreferrer">
+				前往 LearnOS 学习平台 →
+			</Link>
 		</div>
 	);
 }

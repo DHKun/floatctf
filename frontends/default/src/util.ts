@@ -75,3 +75,15 @@ export const diffToPatch = <T extends Record<string, any>>(
 export const useSelectedRowIds = () => {
     return useState<Set<string>>(new Set());
 };
+
+
+/**
+ * LearnOS 入口。优先读取构建期平台变量 VITE_LEARNOS_URL；
+ * 未配置时沿用当前访问主机的 8080 端口，保证 120/10 两个生产入口各自正确。
+ */
+export function getLearnOSUrl(): string {
+    const configured = import.meta.env.VITE_LEARNOS_URL?.trim();
+    if (configured) return configured;
+    if (typeof window === "undefined") return "";
+    return `${window.location.protocol}//${window.location.hostname}:8080`;
+}
