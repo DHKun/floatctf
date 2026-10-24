@@ -211,6 +211,7 @@ pub async fn run() -> Result<(), BootstrapError> {
     // Initialize scheduler
     // 平台出网客户端：只有访问互联网的请求走它（代理取 settings.OUTBOUND_PROXY）。
     let outbound_http = crate::infrastructure::ProxyReqwest::new(db.get_ref().clone());
+    let scheduler_disabled = std::env::var("FLOATCTF_DISABLE_SCHEDULER").ok().as_deref() == Some("1");
     let task_scheduler = scheduler::build_task_scheduler(
         db.clone(),
         docker.clone(),
@@ -227,19 +228,23 @@ pub async fn run() -> Result<(), BootstrapError> {
     .expect("init startup handlers failed!");
 
     let task_scheduler_arc = std::sync::Arc::new(task_scheduler);
-    task_scheduler_arc
-        .init_and_recover()
-        .await
-        .expect("init task scheduler failed!");
+    if !scheduler_disabled {
+        task_scheduler_arc
+            .init_and_recover()
+            .await
+            .expect("init task scheduler failed!");
 
-    // Start background polling
-    let sc_clone = task_scheduler_arc.clone();
-    actix_web::rt::spawn(async move {
-        sc_clone.start_polling().await;
-    });
+        // Start background polling
+        let sc_clone = task_scheduler_arc.clone();
+        actix_web::rt::spawn(async move {
+            sc_clone.start_polling().await;
+        });
 
-    // Redis 即时唤醒订阅；5s DB 轮询仅作为运行期 Redis 故障兜底。
-    crate::scheduler::wake::spawn_wake_listener(task_scheduler_arc.clone());
+        // Redis 即时唤醒订阅；5s DB 轮询仅作为运行期 Redis 故障兜底。
+        crate::scheduler::wake::spawn_wake_listener(task_scheduler_arc.clone());
+    } else {
+        tracing::warn!("scheduler disabled by FLOATCTF_DISABLE_SCHEDULER=1");
+    }
 
     // Create centralized AppState
     let terminal_tickets = std::sync::Arc::new(

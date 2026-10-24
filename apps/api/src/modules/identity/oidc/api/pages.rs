@@ -123,7 +123,10 @@ pub fn scope_item(name: &str, previously_granted: bool) -> Option<ScopeItem> {
 ///
 /// `redirect_uri` 是 OAuth 直接回跳点；`homepage_url` 覆盖 Supabase 这类
 /// 「先回自己的 callback、再跳应用」的中间层，避免最终跳转被 CSP 拦截。
-pub fn form_action_origins(redirect_uri: Option<&str>, homepage_url: Option<&str>) -> Vec<String> {
+pub fn form_action_origins(
+    redirect_uri: Option<&str>,
+    homepage_url: Option<&str>,
+) -> Vec<String> {
     let mut origins = Vec::new();
     for origin in [redirect_uri, homepage_url]
         .into_iter()
