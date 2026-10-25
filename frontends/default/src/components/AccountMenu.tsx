@@ -1,10 +1,14 @@
-import type { WebAccount } from "@floatctf/sdk";
+import type { GlobalLogoutReport, WebAccount } from "@floatctf/sdk";
 import {
+	AlertIcon,
+	CheckCircleIcon,
 	PersonAddIcon,
 	PersonIcon,
 	SignOutIcon,
+	SyncIcon,
+	XCircleIcon,
 } from "@primer/octicons-react";
-import { ActionList, ActionMenu, Avatar, Dialog, useConfirm } from "@primer/react";
+import { ActionList, ActionMenu, Avatar, Dialog, Text, useConfirm } from "@primer/react";
 import { useState } from "react";
 
 import { client } from "@/api";
@@ -45,7 +49,11 @@ export function AccountMenu() {
 	const confirm = useConfirm();
 	const [error, setError] = useState<{ title: string; message: string } | null>(null);
 	const [pending, setPending] = useState(false);
+	const [report, setReport] = useState<GlobalLogoutReport | null>(null);
 
+	if (report) {
+		return <GlobalLogoutResult report={report} onClose={() => { setReport(null); navigate({ to: "/" }); }} />;
+	}
 	if (!status?.user) return null;
 	const current = status.user;
 	const others = status.accounts.filter((a) => !a.active);
@@ -74,6 +82,21 @@ export function AccountMenu() {
 			await mutateSession((csrf) => client.service.webSession.logout("account", null, csrf));
 			navigate({ to: "/" });
 		});
+
+	const signOutEverywhere = async () => {
+		const ok = await confirm({
+			title: "退出 FloatCTF 及所有关联应用？",
+			content:
+				"将退出本浏览器中的当前账号，并通知用该次登录进入过的、支持标准退出的应用（如 LearnOS）结束会话。不支持即时通知的应用会如实列出，需要你在应用内手动退出。其他设备上的登录不受影响。",
+			confirmButtonContent: "退出所有关联应用",
+			confirmButtonType: "danger",
+		});
+		if (!ok) return;
+		await run("退出未完成", async () => {
+			const next = await mutateSession((csrf) => client.service.webSession.logout("global", null, csrf));
+			setReport(next.logout_report ?? { deliveries: [], without_backchannel: [] });
+		});
+	};
 
 	const signOutBrowser = async () => {
 		const ok = await confirm({
@@ -140,6 +163,15 @@ export function AccountMenu() {
 							退出当前账号
 							<ActionList.Description variant="block">只退出 FloatCTF，不影响已登录的第三方应用</ActionList.Description>
 						</ActionList.Item>
+						{status.global_logout && (
+							<ActionList.Item variant="danger" onSelect={() => void signOutEverywhere()} disabled={pending}>
+								<ActionList.LeadingVisual>
+									<SignOutIcon />
+								</ActionList.LeadingVisual>
+								退出所有关联应用…
+								<ActionList.Description variant="block">同时通知已接入标准退出的应用</ActionList.Description>
+							</ActionList.Item>
+						)}
 						{status.accounts.length > 1 && (
 							<ActionList.Item variant="danger" onSelect={() => void signOutBrowser()} disabled={pending}>
 								<ActionList.LeadingVisual>
@@ -161,5 +193,54 @@ export function AccountMenu() {
 				</Dialog>
 			)}
 		</>
+	);
+}
+
+const STATE_TEXT = {
+	delivered: { icon: CheckCircleIcon, text: "已确认退出", className: "color-fg-success" },
+	pending: { icon: SyncIcon, text: "未送达，将自动重试", className: "color-fg-attention" },
+	failed: { icon: XCircleIcon, text: "未能确认", className: "color-fg-danger" },
+} as const;
+
+/** 「退出所有关联应用」的结果：逐个应用如实展示，不把未送达说成成功。 */
+function GlobalLogoutResult({ report, onClose }: { report: GlobalLogoutReport; onClose: () => void }) {
+	const synced =
+		report.deliveries.every((d) => d.status === "delivered") && report.without_backchannel.length === 0;
+	return (
+		<Dialog
+			title={synced ? "已退出 FloatCTF 及关联应用" : "已退出 FloatCTF，但应用未全部同步"}
+			onClose={onClose}
+			footerButtons={[{ content: "完成", buttonType: "primary", onClick: onClose }]}
+		>
+			<div className="d-flex flex-column gap-2">
+				{report.deliveries.length === 0 && report.without_backchannel.length === 0 && (
+					<Text as="p" className="m-0">该次登录没有进入过任何第三方应用，FloatCTF 登录已撤销。</Text>
+				)}
+				{report.deliveries.map((d) => {
+					const state = STATE_TEXT[d.status];
+					const Icon = state.icon;
+					return (
+						<div key={`${d.client_id}-${d.client_name}`} className="d-flex flex-items-center gap-2">
+							<span className={state.className}>
+								<Icon />
+							</span>
+							<span className="text-bold">{d.client_name}</span>
+							<span className={`ml-auto ${state.className}`} title={d.detail ?? undefined}>
+								{state.text}
+							</span>
+						</div>
+					);
+				})}
+				{report.without_backchannel.length > 0 && (
+					<div className="d-flex gap-2 color-fg-attention">
+						<AlertIcon />
+						<Text as="p" className="m-0">
+							以下应用不支持即时退出通知，你在其中的登录可能仍然有效，请在应用内手动退出：
+							{report.without_backchannel.join("、")}
+						</Text>
+					</div>
+				)}
+			</div>
+		</Dialog>
 	);
 }

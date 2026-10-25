@@ -37,6 +37,8 @@ pub enum Relation {
         on_delete = "SetNull"
     )]
     OidcBrowserContainers,
+    #[sea_orm(has_many = "super::oidc_session_clients::Entity")]
+    OidcSessionClients,
     #[sea_orm(
         belongs_to = "super::users::Entity",
         from = "Column::UserId",
@@ -59,9 +61,28 @@ impl Related<super::oidc_browser_containers::Entity> for Entity {
     }
 }
 
+impl Related<super::oidc_session_clients::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::OidcSessionClients.def()
+    }
+}
+
 impl Related<super::users::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Users.def()
+    }
+}
+
+impl Related<super::oidc_clients::Entity> for Entity {
+    fn to() -> RelationDef {
+        super::oidc_session_clients::Relation::OidcClients.def()
+    }
+    fn via() -> Option<RelationDef> {
+        Some(
+            super::oidc_session_clients::Relation::OidcBrowserSessions
+                .def()
+                .rev(),
+        )
     }
 }
 

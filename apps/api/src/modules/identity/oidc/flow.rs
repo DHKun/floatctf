@@ -669,6 +669,18 @@ pub async fn exchange_code(
         return Err(invalid_grant());
     };
 
+    // 记下「这个身份会话向这个应用签发过令牌」：用户明确「退出所有关联应用」时据此通知 RP。
+    // 记录失败不影响登录（只会让该次全局退出少通知一个应用，并在结果页如实显示）。
+    let mut sid = None;
+    if let Some(session_id) = code.session_id {
+        if let Err(e) = store::record_session_client(db, session_id, client.id).await {
+            tracing::warn!(error = %e, "failed to record session ↔ client binding");
+        }
+        if oidc.config.backchannel_logout {
+            sid = store::session_sid(db, session_id).await.unwrap_or(None);
+        }
+    }
+
     let now = Utc::now().timestamp();
     let id_claims = IdTokenClaims {
         iss: oidc.issuer().to_string(),
@@ -680,6 +692,7 @@ pub async fn exchange_code(
         auth_time: code.auth_time.timestamp(),
         nonce: code.nonce.clone(),
         at_hash: Some(claims::at_hash(&access_token)),
+        sid,
     };
     let id_token = oidc.keys.sign(&id_claims).map_err(|e| {
         tracing::error!(error = %e, "OIDC id_token signing failed");

@@ -60,6 +60,9 @@ pub struct WebSessionStatus {
     pub max_accounts: usize,
     /// 部署是否支持「退出所有关联应用」（标准 Back-Channel Logout）。
     pub global_logout: bool,
+    /// 只出现在「退出所有关联应用」的响应里：每个应用的真实通知结果。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logout_report: Option<super::logout::GlobalLogoutReport>,
 }
 
 impl WebSessionStatus {
@@ -73,6 +76,7 @@ impl WebSessionStatus {
             auto_restore: false,
             max_accounts: 1,
             global_logout: false,
+            logout_report: None,
         }
     }
 }
@@ -104,7 +108,8 @@ fn status_of(oidc: &OidcProvider, browser: &Browser) -> WebSessionStatus {
             .collect(),
         auto_restore: active.is_none() && browser.restorable().len() == 1,
         max_accounts: oidc.config.max_browser_accounts,
-        global_logout: false,
+        global_logout: oidc.config.backchannel_logout,
+        logout_report: None,
     }
 }
 
@@ -343,6 +348,8 @@ pub enum WebLogoutScope {
     Account,
     /// 退出本浏览器中的全部账号。
     Browser,
+    /// 退出当前账号并通知关联应用（Back-Channel Logout；部署开启时可用，需用户在界面上明确确认）。
+    Global,
 }
 
 #[derive(Debug, Deserialize)]
@@ -355,7 +362,9 @@ pub struct WebLogoutRequest {
 /// POST /api/users/web-session/logout —— 主站退出。
 ///
 /// 撤销成功（数据库已提交）才返回 200；任何失败都返回错误，前端必须如实提示「未完成退出」。
-/// 普通退出**不**通知第三方应用：LearnOS 等已建立的本地会话保持不变，之后再经 OIDC 登录需要重新认证。
+/// `account` / `browser`（普通退出）**不**通知第三方应用：LearnOS 等已建立的本地会话保持不变，之后再经 OIDC 登录需要重新认证。
+/// `global`：撤销当前账号在本浏览器的身份会话，并向拿到过该会话令牌、登记了 Back-Channel 的应用投递 Logout Token；
+/// 响应的 `logout_report` 如实列出每个应用的结果与不支持即时通知的应用。
 #[post("/web-session/logout")]
 pub async fn logout(
     req: HttpRequest,
@@ -386,6 +395,44 @@ pub async fn logout(
                     &req,
                 );
             }
+        }
+        WebLogoutScope::Global => {
+            if !oidc.config.backchannel_logout {
+                return Err(AppError::NotFound("部署未开启「退出所有关联应用」".into()));
+            }
+            let Some(target) = browser.web_account().cloned() else {
+                return Ok(reply(&oidc, &browser));
+            };
+            let user = target.1.clone();
+            let report = super::logout::global_logout(
+                &db,
+                &oidc,
+                &mut browser,
+                std::slice::from_ref(&target),
+                crate::modules::identity::oidc::backchannel::Reason::MainSite,
+            )
+            .await?;
+            audit(
+                &log,
+                "INFO",
+                "OIDC_GLOBAL_LOGOUT",
+                format!("{} 在主站退出所有关联应用", user.username),
+                json!({
+                    "deliveries": report.deliveries,
+                    "without_backchannel": report.without_backchannel,
+                }),
+                Some(user.id),
+                &req,
+            );
+            let mut current = status_of(&oidc, &browser);
+            current.logout_report = Some(report);
+            let mut resp = HttpResponse::Ok()
+                .insert_header(("Cache-Control", "no-store"))
+                .json(UniResponse::ok(Some(current)));
+            for cookie in &browser.cookies {
+                let _ = resp.add_cookie(cookie);
+            }
+            return Ok(resp);
         }
         WebLogoutScope::Browser => {
             let revoked =

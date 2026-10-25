@@ -22,6 +22,14 @@ fn env() -> &'static Environment<'static> {
                 include_str!("../templates/select_account.html"),
             ),
             ("error.html", include_str!("../templates/error.html")),
+            (
+                "end_session.html",
+                include_str!("../templates/end_session.html"),
+            ),
+            (
+                "logged_out.html",
+                include_str!("../templates/logged_out.html"),
+            ),
         ] {
             env.add_template(name, source)
                 .expect("OIDC page template must compile");

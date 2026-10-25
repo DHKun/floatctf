@@ -281,6 +281,7 @@ input::placeholder { color: var(--muted-foreground); }
 .btn:hover { background: var(--accent); }
 .btn.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
 .btn.primary:hover { opacity: 0.9; }
+a.btn { text-decoration: none; }
 .btn.ghost { border-color: transparent; background: transparent; color: var(--muted-foreground); font-weight: 500; }
 .btn.ghost:hover { background: var(--accent); color: var(--foreground); }
 .btn.destructive { color: var(--destructive); }
@@ -360,6 +361,8 @@ details > summary:hover { background: var(--accent); color: var(--foreground); }
 .result-list { list-style: none; margin: 8px 0 0; padding: 0; border: 1px solid var(--border); border-radius: 12px; }
 .result-list li { display: flex; align-items: center; gap: 10px; padding: 10px 14px; }
 .result-list li + li { border-top: 1px solid var(--border); }
+.result-list .name { font-weight: 500; overflow-wrap: anywhere; }
+ul.accounts > li.identity { margin: 0; }
 .result-list .state { margin-left: auto; font-size: 13px; font-weight: 600; }
 .result-list .state.ok { color: var(--success-foreground); }
 .result-list .state.pending { color: var(--notice-foreground); }

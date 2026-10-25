@@ -43,8 +43,8 @@ function status(user = alice): WebSessionStatus {
 	};
 }
 
-async function setup() {
-	useSessionStore.getState().setStatus(status());
+async function setup(globalLogout = false) {
+	useSessionStore.getState().setStatus({ ...status(), global_logout: globalLogout });
 	render(
 		<ThemeProvider>
 			<BaseStyles>
@@ -107,6 +107,37 @@ describe("AccountMenu", () => {
 		expect(await screen.findByText("退出未完成")).toBeTruthy();
 		expect(navigate).not.toHaveBeenCalled();
 		expect(useSessionStore.getState().status?.authenticated).toBe(true);
+	});
+
+	it("reports every relying party honestly after signing out of all linked apps", async () => {
+		webSession.logout.mockResolvedValue({
+			...status(),
+			authenticated: false,
+			user: null,
+			accounts: [],
+			logout_report: {
+				deliveries: [
+					{ client_id: "c1", client_name: "LearnOS", status: "delivered" },
+					{ client_id: "c2", client_name: "Wiki", status: "pending", detail: "无法连接" },
+				],
+				without_backchannel: ["Legacy App"],
+			},
+		});
+		await setup(true);
+		fireEvent.click(await screen.findByText("退出所有关联应用…"));
+		// 确认对话框
+		fireEvent.click(await screen.findByRole("button", { name: "退出所有关联应用" }));
+		await waitFor(() => expect(webSession.logout).toHaveBeenCalledWith("global", null, "csrf"));
+		expect(await screen.findByText("已退出 FloatCTF，但应用未全部同步")).toBeTruthy();
+		expect(screen.getByText("已确认退出")).toBeTruthy();
+		expect(screen.getByText("未送达，将自动重试")).toBeTruthy();
+		expect(screen.getByText(/Legacy App/)).toBeTruthy();
+	});
+
+	it("hides the global sign-out when the deployment does not support it", async () => {
+		await setup(false);
+		expect(await screen.findByText("退出当前账号")).toBeTruthy();
+		expect(screen.queryByText("退出所有关联应用…")).toBeNull();
 	});
 
 	it("offers adding an account and signing out of every account in this browser", async () => {

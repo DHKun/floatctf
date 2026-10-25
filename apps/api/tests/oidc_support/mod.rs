@@ -76,6 +76,11 @@ pub fn test_config() -> OidcConfig {
         browser_container_ttl_secs: 30 * 24 * 3600,
         unified_web_session: false,
         first_party_origins: Vec::new(),
+        backchannel_logout: false,
+        backchannel_trusted_hosts: Vec::new(),
+        backchannel_extra_ca_file: None,
+        backchannel_timeout_secs: 3,
+        logout_token_ttl_secs: 120,
     }
 }
 

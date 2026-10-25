@@ -51,6 +51,8 @@ export type {
 	SsoBridgeResult,
 } from "./oidc.js";
 export type {
+	GlobalLogoutReport,
+	LogoutDelivery,
 	WebAccount,
 	WebLogoutScope,
 	WebSessionStatus,

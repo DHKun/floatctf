@@ -10,6 +10,7 @@
 
 pub mod accounts;
 pub mod api;
+pub mod backchannel;
 pub mod clients;
 pub mod domain;
 pub mod flow;
@@ -55,11 +56,23 @@ pub struct OidcProvider {
     pub config: OidcConfig,
     pub keys: KeyRing,
     pub rate: Arc<dyn RateGate>,
+    /// Back-Channel Logout 出站客户端（防 SSRF 策略见 `backchannel`）。
+    pub backchannel: backchannel::Sender,
 }
 
 impl OidcProvider {
     pub fn new(config: OidcConfig, keys: KeyRing, rate: Arc<dyn RateGate>) -> Self {
-        Self { config, keys, rate }
+        // bootstrap 在开启标准退出时先单独校验一次（失败拒绝启动）；这里兜底为「投递全部失败并记录原因」。
+        let backchannel = backchannel::Sender::from_config(&config).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "back-channel logout client unavailable");
+            backchannel::Sender::unavailable(e)
+        });
+        Self {
+            config,
+            keys,
+            rate,
+            backchannel,
+        }
     }
 
     pub fn issuer(&self) -> &str {
@@ -89,6 +102,8 @@ pub fn configure_protocol_routes(cfg: &mut ServiceConfig) {
         .service(api::protocol::token)
         .service(api::protocol::userinfo)
         .service(api::protocol::logout)
+        .service(api::logout::end_session)
+        .service(api::logout::end_session_confirm)
         .service(api::assets::static_asset)
         .service(api::assets::account_avatar);
 }

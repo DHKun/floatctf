@@ -273,6 +273,7 @@ async fn chooser_page_uses_logo_avatar_endpoint_and_strict_csp() {
             logo_url: None,
             redirect_uris: vec!["https://rp-assets.example.com/cb".into()],
             scopes: vec!["openid".into(), "profile".into()],
+            ..ClientInput::default()
         },
     )
     .await

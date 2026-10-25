@@ -39,7 +39,27 @@ export type WebSessionStatus = {
 	max_accounts: number;
 	/** 部署是否支持「退出所有关联应用」。 */
 	global_logout: boolean;
+	/** 只出现在 `logout("global")` 的响应中：每个应用的真实通知结果。 */
+	logout_report?: GlobalLogoutReport;
 };
 
-/** `account`：退出一个账号（默认当前账号）；`browser`：退出本浏览器全部账号。 */
-export type WebLogoutScope = "account" | "browser";
+/** 一个应用的 Back-Channel 退出通知结果。 */
+export type LogoutDelivery = {
+	client_id: string;
+	client_name: string;
+	/** `delivered` 已确认；`pending` 未送达、将自动重试；`failed` 未能确认。 */
+	status: "delivered" | "pending" | "failed";
+	detail?: string | null;
+};
+
+export type GlobalLogoutReport = {
+	deliveries: LogoutDelivery[];
+	/** 拿到过该会话令牌、但不支持即时退出通知的应用（会话可能仍然有效）。 */
+	without_backchannel: string[];
+};
+
+/**
+ * `account`：退出一个账号（默认当前账号）；`browser`：退出本浏览器全部账号；
+ * `global`：退出当前账号并通知关联应用（需用户明确确认；部署开启时可用）。
+ */
+export type WebLogoutScope = "account" | "browser" | "global";
