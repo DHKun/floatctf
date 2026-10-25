@@ -128,3 +128,68 @@ REVIEW 项由本次实施者对照截取的页面源码确认行为正确，**�
 4. 不支持 Refresh Token、RP-Initiated / Back-Channel Logout、动态注册、Token 撤销 / 内省（未宣告）。
 5. OIDC 登录页的 IP 限流依赖 `X-Forwarded-For` 首段；API 必须只经 Caddy 暴露（生产 Compose 已如此），否则 IP 维度可被伪造（用户名维度不受影响）。
 6. Default Frontend 的 `GenericTable` 在 `disableSelect` 时会连操作列一起去掉（既有行为，本次未修改，新页面避开了该参数）。
+
+## 8. 账号选择（`prompt=select_account`，2026-10-25，分支 `feat/oidc-account-chooser`）
+
+设计见 [ADR-oidc-account-chooser.md](ADR-oidc-account-chooser.md)。环境：同上隔离测试栈（独立容器 PostgreSQL 17 / Redis 7 / RustFS，
+Docker 只接 `_ping` 桩）；**未部署到任何生产或公网环境**。
+
+### 8.1 自动化测试（FloatCTF）
+
+| 套件 | 命令 | 结果 |
+|------|------|------|
+| OIDC 单元（含 `decide` prompt 组合矩阵、选择页模板转义、同源头像、回滚开关配置） | `cargo test -p floatctf --lib oidc` | 73 passed |
+| 账号选择集成（真实 PostgreSQL） | `DATABASE_URL=… cargo test -p floatctf --test oidc_account_chooser` | 16 passed（并发用例连续 5 次稳定） |
+| 既有协议 / SSO / Discovery 集成 | `… --test oidc_flow --test oidc_management --test oidc_discovery` | 12 / 4 / 3 passed（改动前基线同为 19 passed） |
+| 全量 Rust 回归 | `scripts/test-rust.sh --no-fail-fast`（一次性数据库） | 1033 passed / 6 failed / 14 ignored；6 个失败全部是 `awdp_training`（本机缺本地镜像 `floatctf/test-g:gamebox-v1.0.3`，与 §1 记录的既有失败相同，与 OIDC 无关）；`mise run lint`（workspace clippy + 各前端 lint）通过 |
+| Web 类型检查 / 架构边界 / 单测 / Default Frontend 构建 | `mise run web:typecheck`、`mise run web:architecture`、`pnpm run test:web`、`pnpm --filter @floatctf/frontend-default build` | 通过；64 / 109 / 15 / 174 passed（`frontend-shadcn` 为未检出 submodule） |
+| 安装器契约 | `scripts/test-installer-contract.sh` | 114/114 |
+
+`oidc_account_chooser` 覆盖：无 SSO 直达登录页；有 SSO 必现选择页、GET 可重复打开且不发码 / 不确认；继续当前账号不重新认证（`auth_time` 不变）
+且已同意时不再同意；使用其他账号后旧 Cookie 不能回到 A（选择页 GET 送回登录页、旧 CSRF 失效、直接 POST 同意页失败）、
+B 独立同意、A 旧会话被撤销、两条独立 consent；`consent` / `login` 不显示选择页且 `login` 刷新 `auth_time`；
+`select_account consent`（两页）、`select_account login`（预填所选账号仍须密码）、`select_account` + `max_age=0`；
+`prompt=none`（静默发码 / `consent_required` / 与 `select_account` 组合为 `invalid_request` / `login_required`）；
+取消回传 `access_denied` + `state` + `iss` 且不影响 SSO；会话在展示后被撤销 / 过期 / 用户被删除都不能免密继续；
+伪造 CSRF、换浏览器（只偷 SSO Cookie）、跨站 Origin、非表单、未知动作 / 事务、过期事务；伪造 `user_id` / `session_id` /
+`username` 字段被忽略；另一标签切换账号后要求重新确认（选择页与同意页两条路径）；8 路并发「继续」只发 1 个码；
+`id_token_hint` 指定 A 时 B 的正确密码不能建立会话或发码；事务中途应用被封禁后不能继续；同意页「使用其他账号」走切换状态；
+不传 prompt 的旧 RP 与另一个 RP 行为不变；`account_chooser = false` 回滚到旧同意页。
+
+### 8.2 真实浏览器双系统 E2E（LearnOS × FloatCTF）
+
+- FloatCTF：本分支 API debug 构建，issuer `https://127.0.0.1:8443`；LearnOS：其 `feat/oidc-account-chooser` 分支生产构建
+  （`next start`），`https://localhost:3443`；两者各自独立的 PostgreSQL。
+- TLS：一次性测试 CA 签发证书；LearnOS 服务端 `NODE_EXTRA_CA_CERTS`、Chrome 独立 NSS 证书库信任该 CA，**未使用
+  `ignoreHTTPSErrors` 或任何校验旁路**（无 CA 的 curl 访问会因 `unable to get local issuer certificate` 失败）。
+- 账号与应用都通过 FloatCTF 公共 API 建立（`POST /api/users`、`POST /api/oidc/clients`）。
+- 浏览器：系统 Google Chrome（Playwright `channel: chrome`）。用例：LearnOS `tests/e2e/floatctf-account-chooser.spec.ts`。
+
+| # | 场景 | 结果 |
+|---|------|------|
+| 01 | 无 SSO：密码 → 同意 → LearnOS A；回调仅含 `code`/`state`/`iss` | ✅ |
+| 02/03/17 | 退出 LearnOS（LearnOS 会话行被删、`/courses` 回登录页，FloatCTF `__Host-fctf_sso` 仍在）→ 再次登录**出现选择页**，等待 2 秒不返回、不发码 → 继续：无登录页、无同意页、恰好 1 个码，A 的报名仍在 | ✅ |
+| 11 | 取消：`access_denied` + `state` + `iss`，LearnOS 显示「你已在 FloatCTF 取消登录」且无会话 | ✅ |
+| 04/22 | 使用其他账号：登录页标题「使用其他账号登录」、用户名为空 → B 的密码 → B 自己的同意页 → LearnOS B；B 看不到 A 的报名与笔记；A 的 SSO 被替换 | ✅ |
+| — | 之后选择页只展示 B，不出现 A | ✅ |
+| 16 | 双击「继续」：码数 +1，最终身份为 B | ✅ |
+| 15 | 标签 1 停在 B 的选择页，标签 2 切换为 A；标签 1 点继续 → 「登录账号已发生变化」+ 展示 A，不发码；再确认 → A | ✅ |
+| 14 | 攻击者站点自动提交带正确 txn/csrf 的表单 → 「请求来源无效」，不发码 | ✅ |
+| — | 未登记 `redirect_uri` → FloatCTF 400 错误页，不跳转 | ✅ |
+| 20/09 | 不传 prompt 的旧 RP：首次只有该 RP 的同意页；之后 302 直接回调（无页面）；`prompt=none` 同样 | ✅ |
+| 12 | FloatCTF 会话失效 → 直接登录页（不展示可继续的账号） | ✅ |
+| — | 390px 暗色：无横向滚动；键盘 Enter 触发默认焦点「继续使用此账号」 | ✅ |
+
+结果：12/12 通过，连续两次（LearnOS Better Auth 限流保持开启）。同一环境下 LearnOS 完整 `pnpm test:e2e`：38 passed / 6 skipped / 0 failed
+（skipped 为 LearnOS 历史 Keycloak/Supabase 实测块，需其专用环境）。截图：
+
+![选择页（桌面）](images/select-account-desktop.png)
+![选择页（390px 暗色）](images/select-account-mobile-dark.png)
+
+### 8.3 仍未覆盖 / 限制
+
+1. 未在真实公网域名与生产拓扑（双 issuer 共用库）上验证；部署顺序与回滚见 ADR §2.4 与 `oidc-operations.md`。
+2. 单当前会话：使用其他账号后原账号需重新输入密码；不支持多个账号同时保持登录（ADR §4，后续提案）。
+3. 平台没有「停用用户」状态，PLAN 中「停用账号」场景以「用户被删除 → 会话失效」与 RP 侧停用（LearnOS `disabled_at`）覆盖。
+4. 不实现统一退出（RP-Initiated / Back-Channel Logout）。
+

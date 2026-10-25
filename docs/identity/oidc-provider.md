@@ -22,7 +22,7 @@ FloatCTF 可以作为通用 **OpenID Provider（OP）**：任何标准 OIDC 客�
 | `/oauth/authorize` | GET, POST | 授权端点 |
 | `/oauth/token` | POST | Token 端点（`application/x-www-form-urlencoded`） |
 | `/oauth/userinfo` | GET, POST | UserInfo（Bearer） |
-| `/oauth/login`、`/oauth/consent` | GET, POST | 第一方登录 / 授权确认页（服务端渲染，RP 不直接调用） |
+| `/oauth/login`、`/oauth/select-account`、`/oauth/consent` | GET, POST | 第一方登录 / 账号选择 / 授权确认页（服务端渲染，RP 不直接调用） |
 | `/oauth/logout` | POST | 只清除 FloatCTF 本地 SSO 会话（**不是** RP-Initiated Logout） |
 
 平台内管理接口（需要 FloatCTF 平台 JWT，不属于 OIDC 协议面）：
@@ -63,13 +63,35 @@ Token Revocation / Introspection、RP-Initiated / Front- / Back-Channel Logout�
 | `state` | 推荐；原样回传（≤2048 字节） |
 | `nonce` | 推荐；写入 ID Token（≤512 字节）。若管理员为某机密客户端豁免 PKCE，则 `nonce` **必填** |
 | `code_challenge`、`code_challenge_method` | `S256`；公开客户端必填；机密客户端默认必填。`plain` 或缺省 method 一律拒绝 |
-| `prompt` | `none` / `login` / `consent` / `select_account`；`none` 不能与其他值组合 |
+| `prompt` | `none` / `login` / `consent` / `select_account`，可空格组合；`none` 不能与其他值组合。语义见下表 |
 | `max_age` | 非负整数；超过即要求重新输入密码，`0` 等同 `prompt=login` |
 | `id_token_hint` | 本 OP 签发的 ID Token（可过期）；与当前会话用户不一致时要求重新登录 |
 | `login_hint` | 仅用于预填用户名 |
 | `request` / `request_uri` / `registration` | 返回 `request_not_supported` / `request_uri_not_supported` / `registration_not_supported` |
 
 任何参数重复出现 → `invalid_request`。授权响应（成功或错误）都带 `iss`。
+
+### 3.1 `prompt` 与交互页
+
+授权事务按「账号选择 → 认证 → 授权同意 → 发码」推进，三种页面相互独立（设计见
+[ADR-oidc-account-chooser.md](./ADR-oidc-account-chooser.md)）。下表是浏览器**已有** FloatCTF SSO 时的行为；
+没有 SSO 时任何 prompt 都先到登录页（输入密码即完成本次账号选择，不会再额外弹选择页）。
+
+| `prompt` | 页面 |
+|----------|------|
+| 不传 | 已同意本次 scope → 直接回调（静默 SSO）；否则同意页 |
+| `select_account` | **账号选择页**：显示当前登录的账号（头像、昵称、@用户名），提供「继续使用此账号 / 使用其他账号 / 取消」。继续 → 已同意则直接回调，**不重复同意**；使用其他账号 → 登录页，必须输入密码，新账号的授权单独计算；取消 → `access_denied` |
+| `select_account consent` | 账号选择页 → 同意页 |
+| `select_account login` | 账号选择页 → 重新认证页（预填所选账号，仍须输入密码） |
+| `login`（或 `max_age` 超时） | 重新认证页，`auth_time` 更新；不显示选择页 |
+| `consent` | 同意页；不显示选择页 |
+| `none` | 从不显示页面：可静默完成则发码，否则 `login_required` / `consent_required` |
+
+- 选择页只展示**本浏览器当前有效**的一个 SSO 账号；不展示邮箱，也不会列出「最近使用过的其他账号」。
+  FloatCTF 目前是单当前会话：用其他账号登录后，原账号需要重新输入密码（不支持多个账号同时保持登录）。
+- 选择页由 FloatCTF 提供；「继续」只确认页面展示时的那个会话，提交时浏览器账号已变化会要求重新确认。
+- 带 `id_token_hint` 时只能以该账号完成；在登录页输入其他账号的密码会被拒绝且不替换当前 SSO。
+- 运维可用 `[oidc].account_chooser = false` 临时回退到旧行为（`select_account` 导向同意页），仅用于回滚。
 
 ## 4. Token 端点
 
@@ -116,7 +138,7 @@ UserInfo 支持 `Authorization: Bearer` 或 POST 表单 `access_token`（二选�
 ## 7. 错误
 
 授权端点（重定向回 RP）：`invalid_request`、`unsupported_response_type`、`invalid_scope`、`access_denied`、
-`login_required`、`consent_required`、`request_not_supported`、`request_uri_not_supported`、`registration_not_supported`。
+`login_required`、`consent_required`、`account_selection_required`（防御性，正常不会出现）、`request_not_supported`、`request_uri_not_supported`、`registration_not_supported`。
 
 Token 端点（JSON）：`invalid_request`（400）、`invalid_client`（401，Basic 时带 `WWW-Authenticate: Basic`）、
 `invalid_grant`（400）、`unsupported_grant_type`（400）、`temporarily_unavailable`（429 限流 / 503 限流后端故障）。
@@ -127,10 +149,13 @@ UserInfo：401 + `WWW-Authenticate: Bearer error="invalid_token"`；无令牌时
 
 - 用户在 FloatCTF 网页登录后（`POST /api/users/session`），浏览器获得 HttpOnly SSO Cookie（https 下 `__Host-fctf_sso`，
   `SameSite=Lax`，默认 8 小时）；授权第三方时无需再次输入密码。登出时服务端撤销该会话。
-- 登录 / 同意表单：一次性 CSRF token + 浏览器绑定 Cookie + `Origin` 校验；授权事务 10 分钟有效且只能完成一次。
+- 登录 / 账号选择 / 同意表单：一次性 CSRF token + 浏览器绑定 Cookie + `Origin` 校验；授权事务 10 分钟有效且只能完成一次。
+  事务进行中应用被暂停 / 封禁，后续页面一律失效。
 - 登录限流：每用户名 5 分钟 10 次、每 IP 50 次（设置表 `OIDC_LOGIN_RATE_PER_USER` / `OIDC_LOGIN_RATE_PER_IP` 可调）；
   Redis 不可用时拒绝登录（fail-closed）。
 - 撤销授权或停用应用只影响 FloatCTF 侧令牌；**已签发的 ID Token 不能追溯撤回，RP 自己的登录会话也不会被退出**。
+- 三种会话互相独立：FloatCTF 网页登录（JWT）、FloatCTF SSO Cookie、RP 自己的会话。**退出 RP 不会退出 FloatCTF**，
+  所以 RP 的「登录」按钮应传 `prompt=select_account`，让用户每次主动登录时确认账号。
 
 ## 9. 已知限制
 

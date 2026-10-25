@@ -22,8 +22,6 @@ pub struct Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(has_many = "super::oidc_auth_transactions::Entity")]
-    OidcAuthTransactions,
     #[sea_orm(has_many = "super::oidc_authorization_codes::Entity")]
     OidcAuthorizationCodes,
     #[sea_orm(
@@ -34,12 +32,6 @@ pub enum Relation {
         on_delete = "Cascade"
     )]
     Users,
-}
-
-impl Related<super::oidc_auth_transactions::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::OidcAuthTransactions.def()
-    }
 }
 
 impl Related<super::oidc_authorization_codes::Entity> for Entity {

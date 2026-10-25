@@ -38,10 +38,30 @@ pub struct Model {
     pub created_at: DateTimeWithTimeZone,
     pub expires_at: DateTimeWithTimeZone,
     pub completed_at: Option<DateTimeWithTimeZone>,
+    pub account_choice_session_id: Option<Uuid>,
+    pub account_selected_at: Option<DateTimeWithTimeZone>,
+    pub account_selected_session_id: Option<Uuid>,
+    pub account_switch_requested_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::oidc_browser_sessions::Entity",
+        from = "Column::AccountChoiceSessionId",
+        to = "super::oidc_browser_sessions::Column::Id",
+        on_update = "NoAction",
+        on_delete = "SetNull"
+    )]
+    OidcBrowserSessions3,
+    #[sea_orm(
+        belongs_to = "super::oidc_browser_sessions::Entity",
+        from = "Column::AccountSelectedSessionId",
+        to = "super::oidc_browser_sessions::Column::Id",
+        on_update = "NoAction",
+        on_delete = "SetNull"
+    )]
+    OidcBrowserSessions2,
     #[sea_orm(
         belongs_to = "super::oidc_browser_sessions::Entity",
         from = "Column::SessionId",
@@ -49,7 +69,7 @@ pub enum Relation {
         on_update = "NoAction",
         on_delete = "SetNull"
     )]
-    OidcBrowserSessions,
+    OidcBrowserSessions1,
     #[sea_orm(
         belongs_to = "super::oidc_clients::Entity",
         from = "Column::OidcClientId",
@@ -66,12 +86,6 @@ pub enum Relation {
         on_delete = "Cascade"
     )]
     Users,
-}
-
-impl Related<super::oidc_browser_sessions::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::OidcBrowserSessions.def()
-    }
 }
 
 impl Related<super::oidc_clients::Entity> for Entity {

@@ -10,6 +10,7 @@ pub const PATH_JWKS: &str = "/.well-known/jwks.json";
 pub const PATH_AUTHORIZE: &str = "/oauth/authorize";
 pub const PATH_LOGIN: &str = "/oauth/login";
 pub const PATH_CONSENT: &str = "/oauth/consent";
+pub const PATH_SELECT_ACCOUNT: &str = "/oauth/select-account";
 pub const PATH_TOKEN: &str = "/oauth/token";
 pub const PATH_USERINFO: &str = "/oauth/userinfo";
 pub const PATH_LOGOUT: &str = "/oauth/logout";

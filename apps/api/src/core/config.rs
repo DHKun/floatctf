@@ -233,6 +233,9 @@ pub struct OidcConfig {
     pub allow_loopback_redirect_uris: bool,
     /// 新登记应用是否需要管理员审批后才能使用（默认 true）。
     pub require_client_approval: bool,
+    /// `prompt=select_account` 是否进入独立的账号选择页（默认 true）。
+    /// `false` 仅为临时兼容/回滚模式：`select_account` 回到旧行为（导向同意页）。
+    pub account_chooser: bool,
 }
 
 /// 一把 OIDC 签名 key（RSA 私钥 PEM 文件引用）。
@@ -602,6 +605,8 @@ struct OidcToml {
     allow_loopback_redirect_uris: bool,
     #[serde(default = "default_true")]
     require_client_approval: bool,
+    #[serde(default = "default_true")]
+    account_chooser: bool,
 }
 
 impl Default for OidcToml {
@@ -618,6 +623,7 @@ impl Default for OidcToml {
             secret_rotation_grace_secs: default_oidc_secret_rotation_grace_secs(),
             allow_loopback_redirect_uris: false,
             require_client_approval: true,
+            account_chooser: true,
         }
     }
 }
@@ -723,6 +729,7 @@ fn parse_oidc_config(file: OidcToml, config_dir: &Path) -> anyhow::Result<OidcCo
         secret_rotation_grace_secs: file.secret_rotation_grace_secs,
         allow_loopback_redirect_uris: file.allow_loopback_redirect_uris,
         require_client_approval: file.require_client_approval,
+        account_chooser: file.account_chooser,
     };
     if !config.enabled {
         return Ok(config);
@@ -1347,9 +1354,17 @@ mod tests {
         let config = AppConfig::from_file(&path).unwrap();
         assert!(!config.oidc.enabled);
         assert!(config.oidc.require_client_approval);
+        assert!(config.oidc.account_chooser, "账号选择页默认开启");
         assert!(!config.oidc.allow_loopback_redirect_uris);
         assert_eq!(config.oidc.authorization_code_ttl_secs, 60);
         assert_eq!(config.oidc.session_ttl_secs, 8 * 3600);
+    }
+
+    #[test]
+    fn oidc_account_chooser_can_be_turned_off_as_rollback_switch() {
+        let (_dir, path) = write_oidc_config("[oidc]\naccount_chooser = false\n");
+        let config = AppConfig::from_file(&path).unwrap();
+        assert!(!config.oidc.account_chooser);
     }
 
     #[test]

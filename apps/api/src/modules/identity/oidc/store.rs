@@ -166,12 +166,17 @@ pub async fn create_transaction(
         created_at: Set(now),
         expires_at: Set(now + Duration::seconds(ttl_secs)),
         completed_at: Set(None),
+        account_choice_session_id: Set(None),
+        account_selected_at: Set(None),
+        account_selected_session_id: Set(None),
+        account_switch_requested_at: Set(None),
     }
     .insert(db)
     .await?)
 }
 
-/// 找到仍可推进的事务：未过期、未完成、且由同一浏览器发起。
+/// 找到仍可推进的事务：未过期、未完成、由同一浏览器发起，且应用仍为 active
+/// （事务进行中被暂停/封禁的应用不能再推进登录、选择或同意）。
 pub async fn find_live_transaction(
     db: &DatabaseConnection,
     id: Uuid,
@@ -188,7 +193,11 @@ pub async fn find_live_transaction(
         .one(db)
         .await?;
     Ok(match found {
-        Some((txn, Some(client))) => Some((txn, client)),
+        Some((txn, Some(client)))
+            if client.status == crate::entity::sea_orm_active_enums::OidcClientStatus::Active =>
+        {
+            Some((txn, client))
+        }
         _ => None,
     })
 }
@@ -234,6 +243,151 @@ pub async fn bind_transaction_user(
         active.authenticated_at = Set(Some(now()));
     }
     Ok(active.update(db).await?)
+}
+
+// ── 账号选择（prompt=select_account） ────────────────────────────────────────
+
+/// 仍可推进的事务的公共条件：未完成、未过期。
+fn live_txn_condition(id: Uuid) -> sea_orm::Condition {
+    sea_orm::Condition::all()
+        .add(oidc_auth_transactions::Column::Id.eq(id))
+        .add(oidc_auth_transactions::Column::CompletedAt.is_null())
+        .add(oidc_auth_transactions::Column::ExpiresAt.gt(now()))
+}
+
+/// 账号选择页渲染：生成新的 CSRF，并记下本次展示给用户的 SSO 会话。
+///
+/// 「继续使用此账号」只会确认**这个**会话；如果提交时浏览器 Cookie 已变成别的会话
+/// （另一标签页切换了账号），提交会被拒绝并要求重新确认，而不是悄悄选中新账号。
+pub async fn issue_account_choice_csrf(
+    db: &DatabaseConnection,
+    txn_id: Uuid,
+    session_id: Uuid,
+) -> Result<String, AppError> {
+    let token = secret::new_opaque_secret();
+    oidc_auth_transactions::Entity::update_many()
+        .col_expr(
+            oidc_auth_transactions::Column::CsrfHash,
+            Expr::value(secret::sha256_hex(&token)),
+        )
+        .col_expr(
+            oidc_auth_transactions::Column::AccountChoiceSessionId,
+            Expr::value(Some(session_id)),
+        )
+        .filter(oidc_auth_transactions::Column::Id.eq(txn_id))
+        .exec(db)
+        .await?;
+    Ok(token)
+}
+
+/// 「继续使用此账号」：原子确认账号选择并作废本页 CSRF。
+///
+/// 条件 UPDATE（未完成、未过期、未请求切换、尚未确认、展示的会话就是 `session_id`、
+/// CSRF 摘要未被轮换）只有一个并发请求能命中；未命中返回 `Ok(None)`（双击 / 重放 / 页面已失效）。
+pub async fn confirm_account_selection(
+    db: &DatabaseConnection,
+    txn_id: Uuid,
+    session_id: Uuid,
+    user_id: Uuid,
+    presented_csrf: &str,
+) -> Result<Option<oidc_auth_transactions::Model>, AppError> {
+    let rows = oidc_auth_transactions::Entity::update_many()
+        .col_expr(
+            oidc_auth_transactions::Column::AccountSelectedAt,
+            Expr::value(now()),
+        )
+        .col_expr(
+            oidc_auth_transactions::Column::AccountSelectedSessionId,
+            Expr::value(Some(session_id)),
+        )
+        .col_expr(
+            oidc_auth_transactions::Column::UserId,
+            Expr::value(Some(user_id)),
+        )
+        .col_expr(
+            oidc_auth_transactions::Column::SessionId,
+            Expr::value(Some(session_id)),
+        )
+        .col_expr(
+            oidc_auth_transactions::Column::CsrfHash,
+            Expr::value(secret::sha256_hex(&secret::new_opaque_secret())),
+        )
+        .filter(live_txn_condition(txn_id))
+        .filter(oidc_auth_transactions::Column::AccountSwitchRequestedAt.is_null())
+        .filter(oidc_auth_transactions::Column::AccountSelectedAt.is_null())
+        .filter(oidc_auth_transactions::Column::AccountChoiceSessionId.eq(session_id))
+        .filter(oidc_auth_transactions::Column::CsrfHash.eq(secret::sha256_hex(presented_csrf)))
+        .exec_with_returning(db)
+        .await?;
+    Ok(rows.into_iter().next())
+}
+
+/// 「使用其他账号」：原子标记本事务要求切换账号，清空已有选择并作废本页 CSRF。
+///
+/// 之后旧 SSO 会话在本事务内不可用，直到用户在登录页重新输入密码。返回 false 表示事务已失效。
+pub async fn request_account_switch(
+    db: &DatabaseConnection,
+    txn_id: Uuid,
+    presented_csrf: &str,
+) -> Result<bool, AppError> {
+    let res = oidc_auth_transactions::Entity::update_many()
+        .col_expr(
+            oidc_auth_transactions::Column::AccountSwitchRequestedAt,
+            Expr::value(now()),
+        )
+        .col_expr(
+            oidc_auth_transactions::Column::AccountSelectedAt,
+            Expr::value(Option::<DateTime<FixedOffset>>::None),
+        )
+        .col_expr(
+            oidc_auth_transactions::Column::AccountSelectedSessionId,
+            Expr::value(Option::<Uuid>::None),
+        )
+        .col_expr(
+            oidc_auth_transactions::Column::CsrfHash,
+            Expr::value(secret::sha256_hex(&secret::new_opaque_secret())),
+        )
+        .filter(live_txn_condition(txn_id))
+        .filter(oidc_auth_transactions::Column::CsrfHash.eq(secret::sha256_hex(presented_csrf)))
+        .exec(db)
+        .await?;
+    Ok(res.rows_affected == 1)
+}
+
+/// 本事务内输入密码登录成功：绑定新会话，并记为「已重新认证」+「已确认账号」
+/// （输入密码本身就是一次明确的身份选择）。返回 `Ok(None)` 表示事务已被完成或过期。
+pub async fn bind_password_login(
+    db: &DatabaseConnection,
+    txn_id: Uuid,
+    user_id: Uuid,
+    session_id: Uuid,
+) -> Result<Option<oidc_auth_transactions::Model>, AppError> {
+    let now = now();
+    let rows = oidc_auth_transactions::Entity::update_many()
+        .col_expr(
+            oidc_auth_transactions::Column::UserId,
+            Expr::value(Some(user_id)),
+        )
+        .col_expr(
+            oidc_auth_transactions::Column::SessionId,
+            Expr::value(Some(session_id)),
+        )
+        .col_expr(
+            oidc_auth_transactions::Column::AuthenticatedAt,
+            Expr::value(Some(now)),
+        )
+        .col_expr(
+            oidc_auth_transactions::Column::AccountSelectedAt,
+            Expr::value(Some(now)),
+        )
+        .col_expr(
+            oidc_auth_transactions::Column::AccountSelectedSessionId,
+            Expr::value(Some(session_id)),
+        )
+        .filter(live_txn_condition(txn_id))
+        .exec_with_returning(db)
+        .await?;
+    Ok(rows.into_iter().next())
 }
 
 /// 原子地把事务标记为完成；返回 false 表示已被其他请求完成（防重放/双击）。

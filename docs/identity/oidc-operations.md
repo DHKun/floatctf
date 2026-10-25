@@ -33,6 +33,7 @@ scripts/oidc-keygen.sh app/secrets/oidc dev-key-1
 enabled = true
 issuer = "https://ctf.example.com"          # 必须与浏览器看到的 origin 逐字节一致，无尾斜杠、无路径
 require_client_approval = true              # 新应用需管理员审批（建议保持）
+# account_chooser = true                    # prompt=select_account 显示账号选择页（默认）；false 仅为临时回滚
 # allow_loopback_redirect_uris = false      # 仅开发 / 原生应用测试时开启
 # session_ttl_secs = 28800                  # SSO 会话 8h
 # authorization_code_ttl_secs = 60          # ≤ 120
@@ -98,7 +99,8 @@ ID Token 默认 1 小时有效，JWKS 允许 RP 缓存 5 分钟。按下列步�
 ## 7. 日志与审计
 
 - 管理端「Logs」中 `category = OIDC`：`OIDC_LOGIN` / `OIDC_LOGIN_FAILED` / `OIDC_CONSENT_GRANT` / `OIDC_CONSENT_DENY` /
-  `OIDC_CONSENT_REVOKE` / `OIDC_TOKEN` / `OIDC_TOKEN_REJECTED` / `OIDC_CLIENT_*` / `OIDC_SECRET_ROTATE`。
+  `OIDC_CONSENT_REVOKE` / `OIDC_TOKEN` / `OIDC_TOKEN_REJECTED` / `OIDC_CLIENT_*` / `OIDC_SECRET_ROTATE`；
+  账号选择：`OIDC_ACCOUNT_SELECTED` / `OIDC_ACCOUNT_SWITCH` / `OIDC_ACCOUNT_SELECT_CANCEL` / `OIDC_LOGIN_HINT_MISMATCH`。
 - 日志只含 `client_id`、scope、错误码等元数据；不记录 code、token、secret、密码、PKCE verifier。
 - 授权码重放会额外打出 `OIDC authorization code replay detected` 警告。
 
@@ -115,6 +117,18 @@ ID Token 默认 1 小时有效，JWKS 允许 RP 缓存 5 分钟。按下列步�
    RP 现有登录会话由 RP 自己管理，不受影响；access token 在关闭期间无法使用。
 2. 数据保留，不回滚迁移；重新开启后应用与授权记录仍在。
 3. 停止某个应用：管理员「封禁」，或所有者「暂停」。
+
+### 9.1 账号选择（`prompt=select_account`）的上线与回滚
+
+- 依赖迁移 `20261025145704-oidc-account-chooser.sql`（`oidc_auth_transactions` 新增 4 个可空列，只前进，不改已有迁移）。
+  部署前 `pg_dump` 备份；`migrate.sh apply` 后再启动新版 API。旧版 API 读写该表不受新列影响，因此迁移可先于代码上线。
+- **同一数据库上的所有 FloatCTF API（例如两个 issuer 共用库的拓扑）都要升级到新版本**，否则旧版实例收到
+  `select_account` 时仍导向同意页（体验退化，不越权）。每个 issuer 的 Cookie 只属于自己的主机，选择页只会看到本 issuer 的会话。
+- 部署顺序：**先 FloatCTF（OP），再 RP**（例如 LearnOS 开始发送 `prompt=select_account`）。不传 prompt 的 RP 不受影响。
+- 回滚：`[oidc].account_chooser = false` 并重启 —— `select_account` 回到旧行为（同意页），其余 OIDC 不变；
+  这是临时兼容模式。需要回退代码时直接部署上一版本，新增列保留在库中即可（全部可空，旧代码忽略）。
+- 升级时进行中的授权事务（默认 10 分钟有效）继续可用：新列为空即「尚未选择」，带 `select_account` 且停在旧同意页的事务，
+  提交后会先被带到账号选择页再继续；不带 prompt 的事务行为不变。
 
 ## 10. 故障排查
 
