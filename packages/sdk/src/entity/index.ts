@@ -56,6 +56,7 @@ export * from "./logs.js";
 export * from "./oidc_access_tokens.js";
 export * from "./oidc_auth_transactions.js";
 export * from "./oidc_authorization_codes.js";
+export * from "./oidc_browser_containers.js";
 export * from "./oidc_browser_sessions.js";
 export * from "./oidc_clients.js";
 export * from "./oidc_consents.js";

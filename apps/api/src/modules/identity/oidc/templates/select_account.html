@@ -4,18 +4,24 @@
 <h1>选择账号</h1>
 <p class="muted">以继续访问 <strong>{{ client_name }}</strong><span class="badge">第三方应用</span>{% if client_host %}<br>{{ client_host }}{% endif %}</p>
 {% if account_changed %}<div class="notice" role="alert">当前浏览器的 FloatCTF 登录账号已发生变化，请重新确认要使用的账号。</div>{% endif %}
+{% if signed_out %}<div class="notice" role="status">已退出所选账号。</div>{% endif %}
 <form method="post" action="{{ action }}">
   <input type="hidden" name="txn" value="{{ txn }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">
-  <div class="account" aria-label="当前已登录的 FloatCTF 账号">
-    {% if avatar %}<img class="avatar" src="{{ avatar }}" alt="" width="40" height="40">{% else %}<span class="avatar" aria-hidden="true">{{ initial }}</span>{% endif %}
-    <span class="who"><strong>{{ nickname }}</strong><span class="muted">@{{ username }}</span></span>
-  </div>
+  <input type="hidden" name="action" value="continue">
+  {% for a in accounts %}
+  <button type="submit" name="account" value="{{ a.id }}" class="account">
+    <span class="avatar" aria-hidden="true">{{ a.initial }}</span>
+    <span class="who"><strong>{{ a.nickname }}</strong><span class="muted">@{{ a.username }}</span></span>
+  </button>
+  {% endfor %}
+</form>
+<form method="post" action="{{ action }}">
+  <input type="hidden" name="txn" value="{{ txn }}">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
   <div class="stack">
-    <button type="submit" name="action" value="continue" class="primary" autofocus>继续使用此账号</button>
     <button type="submit" name="action" value="other">使用其他账号</button>
     <button type="submit" name="action" value="cancel">取消</button>
   </div>
 </form>
-<p class="muted" style="margin-top:14px">这是你在本浏览器中登录的 FloatCTF 账号。选择「使用其他账号」需要输入另一个账号的密码，并会替换本浏览器中当前的 FloatCTF 登录状态。退出第三方应用不会退出 FloatCTF；在共用电脑上使用后，请在 FloatCTF 中退出登录。</p>
 {% endblock %}

@@ -59,6 +59,7 @@ pub mod logs;
 pub mod oidc_access_tokens;
 pub mod oidc_auth_transactions;
 pub mod oidc_authorization_codes;
+pub mod oidc_browser_containers;
 pub mod oidc_browser_sessions;
 pub mod oidc_clients;
 pub mod oidc_consents;

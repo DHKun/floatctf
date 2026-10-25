@@ -5,6 +5,7 @@ pub mod discovery;
 pub mod pages;
 pub mod protocol;
 pub mod session;
+pub mod web_session;
 
 use actix_web::HttpResponse;
 

@@ -57,6 +57,7 @@ pub use super::logs::Entity as Logs;
 pub use super::oidc_access_tokens::Entity as OidcAccessTokens;
 pub use super::oidc_auth_transactions::Entity as OidcAuthTransactions;
 pub use super::oidc_authorization_codes::Entity as OidcAuthorizationCodes;
+pub use super::oidc_browser_containers::Entity as OidcBrowserContainers;
 pub use super::oidc_browser_sessions::Entity as OidcBrowserSessions;
 pub use super::oidc_clients::Entity as OidcClients;
 pub use super::oidc_consents::Entity as OidcConsents;

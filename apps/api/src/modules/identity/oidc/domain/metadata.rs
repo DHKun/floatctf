@@ -14,6 +14,10 @@ pub const PATH_SELECT_ACCOUNT: &str = "/oauth/select-account";
 pub const PATH_TOKEN: &str = "/oauth/token";
 pub const PATH_USERINFO: &str = "/oauth/userinfo";
 pub const PATH_LOGOUT: &str = "/oauth/logout";
+/// 本浏览器账号相关的第一方资源（头像），只对持有本浏览器容器 Cookie 的请求可见。
+pub const PATH_ACCOUNTS: &str = "/oauth/accounts";
+/// OP 页面的同源静态资源（品牌 Logo、渐进增强脚本）。
+pub const PATH_ASSETS: &str = "/oauth/assets";
 
 /// 已支持的 claims（`sub` 与 ID Token 注册 claims + scope claims）。
 pub const CLAIMS_SUPPORTED: [&str; 16] = [

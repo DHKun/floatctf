@@ -236,6 +236,23 @@ pub struct OidcConfig {
     /// `prompt=select_account` 是否进入独立的账号选择页（默认 true）。
     /// `false` 仅为临时兼容/回滚模式：`select_account` 回到旧行为（导向同意页）。
     pub account_chooser: bool,
+    /// 浏览器账号容器（`__Host-fctf_accounts`）与多账号（默认 false = 旧版单会话 `__Host-fctf_sso`）。
+    pub multi_account: bool,
+    /// 一个浏览器容器内最多同时登录的账号数（超出时淘汰最久未用的会话）。
+    pub max_browser_accounts: usize,
+    /// 浏览器账号容器 Cookie 的滑动有效期（秒）；容器内各账号会话仍按 `session_ttl_secs` 过期。
+    pub browser_container_ttl_secs: i64,
+    /// FloatCTF 主站改用服务端可撤销的 Cookie 会话（默认 false = 旧版 localStorage JWT）。要求 `multi_account`。
+    pub unified_web_session: bool,
+    /// 除 issuer 外，同一 API 实例服务的其他主站 origin（必须与 issuer 同主机，Cookie 才能共享）。
+    pub first_party_origins: Vec<String>,
+}
+
+impl OidcConfig {
+    /// 主站 Cookie 会话允许的 `Origin`：issuer 本身 + `first_party_origins`。
+    pub fn is_first_party_origin(&self, origin: &str) -> bool {
+        origin == self.issuer || self.first_party_origins.iter().any(|o| o == origin)
+    }
 }
 
 /// 一把 OIDC 签名 key（RSA 私钥 PEM 文件引用）。
@@ -607,6 +624,16 @@ struct OidcToml {
     require_client_approval: bool,
     #[serde(default = "default_true")]
     account_chooser: bool,
+    #[serde(default)]
+    multi_account: bool,
+    #[serde(default = "default_oidc_max_browser_accounts")]
+    max_browser_accounts: usize,
+    #[serde(default = "default_oidc_browser_container_ttl_secs")]
+    browser_container_ttl_secs: i64,
+    #[serde(default)]
+    unified_web_session: bool,
+    #[serde(default)]
+    first_party_origins: Vec<String>,
 }
 
 impl Default for OidcToml {
@@ -624,6 +651,11 @@ impl Default for OidcToml {
             allow_loopback_redirect_uris: false,
             require_client_approval: true,
             account_chooser: true,
+            multi_account: false,
+            max_browser_accounts: default_oidc_max_browser_accounts(),
+            browser_container_ttl_secs: default_oidc_browser_container_ttl_secs(),
+            unified_web_session: false,
+            first_party_origins: Vec::new(),
         }
     }
 }
@@ -656,6 +688,12 @@ fn default_oidc_id_token_ttl_secs() -> i64 {
 }
 fn default_oidc_secret_rotation_grace_secs() -> i64 {
     24 * 3600
+}
+fn default_oidc_max_browser_accounts() -> usize {
+    5
+}
+fn default_oidc_browser_container_ttl_secs() -> i64 {
+    30 * 24 * 3600
 }
 
 /// 校验 OIDC issuer：只允许 origin，`https` 必需，`http` 仅限 loopback 主机。
@@ -730,6 +768,15 @@ fn parse_oidc_config(file: OidcToml, config_dir: &Path) -> anyhow::Result<OidcCo
         allow_loopback_redirect_uris: file.allow_loopback_redirect_uris,
         require_client_approval: file.require_client_approval,
         account_chooser: file.account_chooser,
+        multi_account: file.multi_account,
+        max_browser_accounts: file.max_browser_accounts,
+        browser_container_ttl_secs: file.browser_container_ttl_secs,
+        unified_web_session: file.unified_web_session,
+        first_party_origins: file
+            .first_party_origins
+            .iter()
+            .map(|o| o.trim().to_string())
+            .collect(),
     };
     if !config.enabled {
         return Ok(config);
@@ -802,6 +849,38 @@ fn parse_oidc_config(file: OidcToml, config_dir: &Path) -> anyhow::Result<OidcCo
         0,
         30 * 24 * 3600,
     )?;
+    if config.max_browser_accounts == 0 || config.max_browser_accounts > 10 {
+        anyhow::bail!(
+            "oidc.max_browser_accounts 必须在 1..=10 之间（当前 {}）",
+            config.max_browser_accounts
+        );
+    }
+    bounded(
+        "browser_container_ttl_secs",
+        config.browser_container_ttl_secs,
+        config.session_ttl_secs,
+        180 * 24 * 3600,
+    )?;
+    if config.unified_web_session && !config.multi_account {
+        anyhow::bail!(
+            "oidc.unified_web_session = true 需要 oidc.multi_account = true（主站会话挂在浏览器账号容器上）"
+        );
+    }
+    let issuer_host = url::Url::parse(&config.issuer)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string));
+    for origin in &config.first_party_origins {
+        validate_oidc_issuer(origin)
+            .map_err(|e| anyhow::anyhow!("oidc.first_party_origins 项 {origin:?} 非法：{e}"))?;
+        let host = url::Url::parse(origin)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string));
+        if host != issuer_host {
+            anyhow::bail!(
+                "oidc.first_party_origins 项 {origin:?} 必须与 issuer 同主机（host-only Cookie 只在同主机间共享）"
+            );
+        }
+    }
     Ok(config)
 }
 
@@ -1365,6 +1444,60 @@ mod tests {
         let (_dir, path) = write_oidc_config("[oidc]\naccount_chooser = false\n");
         let config = AppConfig::from_file(&path).unwrap();
         assert!(!config.oidc.account_chooser);
+    }
+
+    const ENABLED_OIDC: &str = "[oidc]\nenabled = true\nissuer = \"https://ctf.example.com\"\n\
+        [[oidc.signing_keys]]\nkid = \"a\"\nprivate_key_file = \"keys/a.pem\"\nactive = true\n";
+
+    #[test]
+    fn unified_identity_switches_default_off_for_staged_rollout() {
+        let (_dir, path) = write_oidc_config(ENABLED_OIDC);
+        let oidc = AppConfig::from_file(&path).unwrap().oidc;
+        assert!(!oidc.multi_account);
+        assert!(!oidc.unified_web_session);
+        assert_eq!(oidc.max_browser_accounts, 5);
+        assert_eq!(oidc.browser_container_ttl_secs, 30 * 24 * 3600);
+        assert!(oidc.first_party_origins.is_empty());
+        assert!(oidc.is_first_party_origin("https://ctf.example.com"));
+        assert!(!oidc.is_first_party_origin("https://evil.example.com"));
+    }
+
+    #[test]
+    fn unified_web_session_requires_browser_account_container() {
+        // TOML 中 [[oidc.signing_keys]] 之后的键会落进数组表，因此开关必须写在 key 之前。
+        let toml = |body: &str| {
+            format!(
+                "[oidc]\nenabled = true\nissuer = \"https://ctf.example.com\"\n{body}\n\
+                 [[oidc.signing_keys]]\nkid = \"a\"\nprivate_key_file = \"keys/a.pem\"\nactive = true\n"
+            )
+        };
+        let (_d, p) = write_oidc_config(&toml("unified_web_session = true"));
+        assert!(
+            AppConfig::from_file(&p)
+                .unwrap_err()
+                .to_string()
+                .contains("multi_account")
+        );
+        let (_d, p) = write_oidc_config(&toml("unified_web_session = true\nmulti_account = true"));
+        let oidc = AppConfig::from_file(&p).unwrap().oidc;
+        assert!(oidc.unified_web_session && oidc.multi_account);
+
+        // 第一方 origin 必须是规范 origin 且与 issuer 同主机（端口可以不同）。
+        let (_d, p) = write_oidc_config(&toml(
+            "multi_account = true\nfirst_party_origins = [\"https://ctf.example.com:8443\"]",
+        ));
+        let oidc = AppConfig::from_file(&p).unwrap().oidc;
+        assert!(oidc.is_first_party_origin("https://ctf.example.com:8443"));
+        for bad in [
+            "https://other.example.com",
+            "https://ctf.example.com/",
+            "http://ctf.example.com",
+        ] {
+            let (_d, p) = write_oidc_config(&toml(&format!("first_party_origins = [\"{bad}\"]")));
+            assert!(AppConfig::from_file(&p).is_err(), "{bad} must be rejected");
+        }
+        let (_d, p) = write_oidc_config(&toml("multi_account = true\nmax_browser_accounts = 0"));
+        assert!(AppConfig::from_file(&p).is_err());
     }
 
     #[test]

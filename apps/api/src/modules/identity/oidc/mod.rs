@@ -8,6 +8,7 @@
 //! `[oidc].enabled = false` 时不注册 [`OidcProvider`]，所有协议端点返回 404，
 //! 平台其余行为与未引入本模块时逐字一致。
 
+pub mod accounts;
 pub mod api;
 pub mod clients;
 pub mod domain;
