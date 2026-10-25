@@ -70,8 +70,13 @@ export function applyStatus(next: WebSessionStatus, broadcast = false): void {
 		getContext().queryClient.clear();
 	}
 	if (next.user) {
-		useAuthStore.getState().setUsername(next.user.username);
-		useAuthStore.getState().setNickname(next.user.nickname);
+		// 只是展示用缓存（旧页面读取 username/nickname）；浏览器禁用存储时不能影响登录态切换。
+		try {
+			useAuthStore.getState().setUsername(next.user.username);
+			useAuthStore.getState().setNickname(next.user.nickname);
+		} catch {
+			// ignore
+		}
 	}
 	if (broadcast) channel?.postMessage({ type: "changed" });
 }

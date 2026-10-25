@@ -3,9 +3,10 @@ import {
 	createFileRoute,
 	redirect,
 	useLocation,
+	useNavigate,
 } from "@tanstack/react-router";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import { serviceApi } from "@/api";
 import { HierarchicalSideBar, ServiceHeader } from "@/components";
@@ -40,8 +41,29 @@ function useSsoBridge() {
 	}, [token, mode]);
 }
 
+/**
+ * 统一会话：另一标签页退出 / 切换账号（BroadcastChannel 或 401 重新同步）后，
+ * 本标签页不能继续停留在上一个账号的页面上——退出则回登录页，换人则回首页并重新加载数据。
+ */
+function useSessionWatcher() {
+	const navigate = useNavigate();
+	const mode = useSessionStore((s) => s.mode);
+	const userId = useSessionStore((s) => s.status?.user?.id ?? null);
+	const previous = useRef(userId);
+	useEffect(() => {
+		if (mode !== "cookie") return;
+		if (userId === null) {
+			void navigate({ to: "/" });
+		} else if (previous.current && previous.current !== userId) {
+			void navigate({ to: "/service/top" });
+		}
+		previous.current = userId;
+	}, [mode, userId, navigate]);
+}
+
 function RouteComponent() {
 	useSsoBridge();
+	useSessionWatcher();
 	const location = useLocation();
 
 	const hideSidebarPatterns = [/^\/service\/events\/.+/];

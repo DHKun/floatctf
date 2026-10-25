@@ -2,11 +2,13 @@ import { client, serviceApi, userServiceApi } from "@/api";
 import { useAppNavigate } from "@/navigation";
 import { isCookieMode, mutateSession } from "@/session";
 import { useAuthStore } from "@/stores/AuthStore";
+import { useSessionStore } from "@/stores/SessionStore";
 import { getLearnOSUrl } from "@/util";
 import { Button, Dialog } from "@primer/react";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
+import { AccountMenu } from "./AccountMenu";
 import { formatApiError } from "./apiErrorMessage";
 
 export interface GenericHeaderProps
@@ -32,6 +34,7 @@ export const GenericHeader = ({
 }: GenericHeaderProps) => {
 	const authStore = useAuthStore();
 	const appNavigate = useAppNavigate();
+	const cookieMode = useSessionStore((s) => s.mode === "cookie");
 
 	const { data, isLoading } = useQuery({
 		queryKey: ["profile"],
@@ -91,17 +94,24 @@ export const GenericHeader = ({
 					>
 						LearnOS
 					</a>
-					<span
-						className="hover:cursor-pointer hover:underline"
-						onKeyUp={(e) => e.key === "Enter" && handleGoProfile()}
-						onClick={handleGoProfile}
-					>
-						{authStore.username}
-						{authStore.nickname && <span>:{authStore.nickname}</span>}
-					</span>
-					<Button variant="danger" onClick={onLogout}>
-						Logout
-					</Button>
+					{cookieMode ? (
+						// 统一会话：账号菜单（切换 / 添加 / 退出），状态以服务端为准。
+						<AccountMenu />
+					) : (
+						<>
+							<span
+								className="hover:cursor-pointer hover:underline"
+								onKeyUp={(e) => e.key === "Enter" && handleGoProfile()}
+								onClick={handleGoProfile}
+							>
+								{authStore.username}
+								{authStore.nickname && <span>:{authStore.nickname}</span>}
+							</span>
+							<Button variant="danger" onClick={onLogout}>
+								Logout
+							</Button>
+						</>
+					)}
 				</div>
 			) : (
 				<Button variant="danger" onClick={onLogout}>
