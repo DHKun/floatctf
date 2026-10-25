@@ -246,6 +246,7 @@ pub struct TxnQuery {
 
 async fn render_login(
     db: &WebDb,
+    multi_account: bool,
     txn: &crate::entity::oidc_auth_transactions::Model,
     client: &crate::entity::oidc_clients::Model,
     username: &str,
@@ -271,6 +272,7 @@ async fn render_login(
             error => error,
             reauth => !switching && (prompt.login || txn.max_age.is_some()),
             switching => switching,
+            multi_account => multi_account,
         },
         &rp_form_action_origins(txn, client),
     )
@@ -323,7 +325,18 @@ pub async fn login_page(
     let binding = cookie_value(&req, binding_cookie_name(oidc.secure_cookies()));
     match store::find_live_transaction(&db, txn_id, binding.as_deref()).await {
         Ok(Some((txn, client))) => match login_prefill(&db, &txn).await {
-            Ok(hint) => render_login(&db, &txn, &client, &hint, None, StatusCode::OK).await,
+            Ok(hint) => {
+                render_login(
+                    &db,
+                    oidc.config.multi_account,
+                    &txn,
+                    &client,
+                    &hint,
+                    None,
+                    StatusCode::OK,
+                )
+                .await
+            }
             Err(_) => server_error_page(),
         },
         Ok(None) => pages::error_page(400, flow::TXN_EXPIRED_MESSAGE),
@@ -426,6 +439,7 @@ pub async fn login_submit(
     {
         return render_login(
             &db,
+            oidc.config.multi_account,
             &txn,
             &client,
             &username,
@@ -440,6 +454,7 @@ pub async fn login_submit(
         Ok(false) => {
             return render_login(
                 &db,
+                oidc.config.multi_account,
                 &txn,
                 &client,
                 &username,
@@ -472,6 +487,7 @@ pub async fn login_submit(
             );
             return render_login(
                 &db,
+                oidc.config.multi_account,
                 &txn,
                 &client,
                 &username,
@@ -501,6 +517,7 @@ pub async fn login_submit(
         );
         return render_login(
             &db,
+            oidc.config.multi_account,
             &txn,
             &client,
             "",
@@ -612,9 +629,9 @@ pub async fn consent_page(
         };
         let browser = accounts::load(&db, &oidc, &req).await?;
         match flow::consent_ready(&db, &oidc, &txn, &client, &browser.accounts).await? {
-            Some((_, user)) => {
+            Some((session, user)) => {
                 let previous = store::find_active_consent(&db, user.id, client.id).await?;
-                Ok(Ok((txn, client, user, previous)))
+                Ok(Ok((txn, client, (session, user), previous)))
             }
             // 会话变化（过期/另一个标签页切换了账号）、尚未选择账号、已要求切换账号 → 重新走决策。
             None => Ok(Err(flow::advance(
@@ -628,7 +645,7 @@ pub async fn consent_page(
         }
     }
     .await;
-    let (txn, client, user, previous) = match result {
+    let (txn, client, account, previous) = match result {
         Ok(Ok(v)) => v,
         Ok(Err(next)) => return respond(next, vec![]),
         Err::<_, crate::api::AppError>(_) => return server_error_page(),
@@ -645,6 +662,7 @@ pub async fn consent_page(
         .filter_map(|s| pages::scope_item(s, previously.contains(s)))
         .collect();
     let form_action_origins = rp_form_action_origins(&txn, &client);
+    let view = account_view(&account);
     pages::html(
         StatusCode::OK,
         "consent.html",
@@ -654,7 +672,10 @@ pub async fn consent_page(
             csrf => csrf,
             client_name => client.name.clone(),
             client_host => pages::host_of(client.homepage_url.as_deref()),
-            user_display => format!("{}（@{}）", user.nickname, user.username),
+            user_nickname => view.nickname,
+            user_username => view.username,
+            user_initial => view.initial,
+            user_avatar_url => view.avatar_url,
             scopes => items,
         },
         &form_action_origins,

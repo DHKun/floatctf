@@ -88,7 +88,9 @@ pub fn configure_protocol_routes(cfg: &mut ServiceConfig) {
         .service(api::protocol::consent_submit)
         .service(api::protocol::token)
         .service(api::protocol::userinfo)
-        .service(api::protocol::logout);
+        .service(api::protocol::logout)
+        .service(api::assets::static_asset)
+        .service(api::assets::account_avatar);
 }
 
 /// 开发者中心与用户授权管理（挂在 `/api/oidc` 下，玩家 JWT）。

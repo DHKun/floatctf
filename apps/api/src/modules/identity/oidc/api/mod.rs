@@ -1,5 +1,6 @@
 //! OIDC HTTP 端点。
 
+pub mod assets;
 pub mod developer;
 pub mod discovery;
 pub mod pages;
