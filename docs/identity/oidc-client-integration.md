@@ -122,9 +122,16 @@ Scopes = `openid profile email`。注意该平台对 `email_verified=false` 的�
 | Token 端点 `invalid_grant` | 授权码过期（60 秒）、已用过、`redirect_uri` 不一致、`code_verifier` 不匹配 |
 | UserInfo 401 `invalid_token` | access token 过期（1 小时）、用户撤销了授权、应用被停用 |
 | 回调带 `error=login_required` / `consent_required` | 你用了 `prompt=none`，而用户未登录 FloatCTF / 尚未同意 |
+| 回调带 `error=access_denied` | 用户在 FloatCTF 登录、账号选择或同意页点了「取消 / 拒绝」；不要为此建立登录会话 |
+| 用户退出你的应用后再点登录，被直接带回且没有机会换账号 | 你的应用退出只结束了自己的会话，FloatCTF SSO 仍有效（正常现象）。在用户主动点击的登录按钮上传 `prompt=select_account`，FloatCTF 会显示账号选择页 |
 
 ## 6. 用户撤销与登出
 
 - 用户可以在 FloatCTF「Authorized Apps」中撤销授权：你持有的 access token 立即失效，下次登录需重新同意。
 - FloatCTF **不会**通知你，也不能退出你应用内的会话；需要时请缩短你自己的会话或定期用 `prompt=none` 重新确认。
 - 当前不支持 Refresh Token 与 RP-Initiated Logout。
+- 你的应用「退出」**不会**退出 FloatCTF（浏览器也不允许你清除 FloatCTF 的 Cookie）。请在退出后的界面如实说明，
+  并在用户主动点击的「使用 FloatCTF 登录 / 绑定 FloatCTF」按钮上传 `prompt=select_account`：有 SSO 时用户会看到
+  FloatCTF 的账号选择页，可免密码继续当前账号或输入密码使用其他账号。后台静默续期等非用户主动场景不要传它。
+- 账号绑定（把 FloatCTF 身份关联到你应用里已有的账号）同样应传 `prompt=select_account`，避免浏览器里残留的
+  其他 FloatCTF 账号被静默绑定；始终以 `(iss, sub)` 关联，不要按邮箱自动合并。

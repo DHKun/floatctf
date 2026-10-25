@@ -33,6 +33,7 @@ scripts/oidc-keygen.sh app/secrets/oidc dev-key-1
 enabled = true
 issuer = "https://ctf.example.com"          # 必须与浏览器看到的 origin 逐字节一致，无尾斜杠、无路径
 require_client_approval = true              # 新应用需管理员审批（建议保持）
+# account_chooser = true                    # prompt=select_account 显示账号选择页（默认）；false 仅为临时回滚
 # allow_loopback_redirect_uris = false      # 仅开发 / 原生应用测试时开启
 # session_ttl_secs = 28800                  # SSO 会话 8h
 # authorization_code_ttl_secs = 60          # ≤ 120
