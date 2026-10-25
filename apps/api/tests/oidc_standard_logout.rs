@@ -902,7 +902,11 @@ async fn end_session_cancel_keeps_the_login_and_endpoint_is_absent_when_disabled
         b,
         test::TestRequest::get().uri(&format!(
             "/oauth/end-session?{}",
-            form(&[("id_token_hint", hint.as_str())])
+            form(&[
+                ("id_token_hint", hint.as_str()),
+                ("post_logout_redirect_uri", rp.post_logout.as_str()),
+                ("state", "cancel-state"),
+            ])
         ))
     );
     let html = body_string!(resp);
@@ -920,7 +924,13 @@ async fn end_session_cancel_keeps_the_login_and_endpoint_is_absent_when_disabled
             ]))
     );
     assert_eq!(resp.status(), 200);
-    assert!(body_string!(resp).contains("已取消退出"));
+    let html = body_string!(resp);
+    assert!(html.contains("已取消退出"));
+    assert!(html.contains("返回"), "仍提供回到应用的链接");
+    assert!(
+        !html.contains("state="),
+        "取消后回到应用不带 state，RP 不会误报已退出 FloatCTF"
+    );
     assert!(
         session_of(&db, &alice)
             .await

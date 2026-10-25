@@ -255,9 +255,8 @@ pub async fn end_session(
         .and_then(pages::origin_of)
         .into_iter()
         .collect::<Vec<_>>();
-    let continue_url = redirect_to
-        .as_deref()
-        .map(|u| back_to_client(u, state.as_deref()));
+    // 无事可做时回到应用但**不带 state**：RP 据此知道 FloatCTF 侧没有发生退出。
+    let continue_url = redirect_to.as_deref().map(|u| back_to_client(u, None));
 
     let mut resp = match request {
         // 本浏览器中没有与之匹配的 FloatCTF 登录：无事可做（也不会去动别的浏览器/设备）。
@@ -416,17 +415,16 @@ pub async fn end_session_confirm(
     };
     let client_name = client.as_ref().map(|c| c.name.clone());
     // 回跳前再确认一次仍在登记列表中（确认页停留期间应用可能修改了登记）。
-    let continue_url = request
-        .post_logout_redirect_uri
-        .as_deref()
-        .filter(|uri| {
-            client.as_ref().is_some_and(|c| {
-                clients::post_logout_redirect_uris_of(c)
-                    .iter()
-                    .any(|u| u == uri)
-            })
+    let registered_redirect = request.post_logout_redirect_uri.as_deref().filter(|uri| {
+        client.as_ref().is_some_and(|c| {
+            clients::post_logout_redirect_uris_of(c)
+                .iter()
+                .any(|u| u == uri)
         })
-        .map(|uri| back_to_client(uri, request.state.as_deref()));
+    });
+    // 只有真正执行了退出才带回 state；取消时不带（RP 据此不会误报「已在 FloatCTF 退出」）。
+    let continue_url = registered_redirect.map(|uri| back_to_client(uri, request.state.as_deref()));
+    let cancel_url = registered_redirect.map(|uri| back_to_client(uri, None));
     let form_origins = request
         .post_logout_redirect_uri
         .as_deref()
@@ -447,7 +445,7 @@ pub async fn end_session_confirm(
         return pages::html(
             StatusCode::OK,
             "logged_out.html",
-            minijinja::context! { cancelled => true, client_name => client_name, continue_url => continue_url },
+            minijinja::context! { cancelled => true, client_name => client_name, continue_url => cancel_url },
             &form_origins,
         );
     }
