@@ -211,7 +211,8 @@ pub async fn run() -> Result<(), BootstrapError> {
     // Initialize scheduler
     // 平台出网客户端：只有访问互联网的请求走它（代理取 settings.OUTBOUND_PROXY）。
     let outbound_http = crate::infrastructure::ProxyReqwest::new(db.get_ref().clone());
-    let scheduler_disabled = std::env::var("FLOATCTF_DISABLE_SCHEDULER").ok().as_deref() == Some("1");
+    let scheduler_disabled =
+        std::env::var("FLOATCTF_DISABLE_SCHEDULER").ok().as_deref() == Some("1");
     let task_scheduler = scheduler::build_task_scheduler(
         db.clone(),
         docker.clone(),
