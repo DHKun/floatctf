@@ -50,3 +50,9 @@ export type {
 	OidcProviderInfo,
 	SsoBridgeResult,
 } from "./oidc.js";
+export type {
+	WebAccount,
+	WebLogoutScope,
+	WebSessionStatus,
+	WebSessionUser,
+} from "./webSession.js";

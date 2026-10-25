@@ -11,10 +11,11 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useReactive, useTitle } from "ahooks";
 import { useEffect, useRef } from "react";
 
-import { serviceApi } from "@/api";
+import { client, serviceApi } from "@/api";
 import { useMsgInlineBanner } from "@/components";
 import { AppLink } from "@/navigation";
 import { ServiceRouteGuardWithRedirect } from "@/routes/service/route";
+import { isCookieMode, mutateSession } from "@/session";
 import { useAuthStore } from "@/stores/AuthStore";
 import { getLearnOSUrl } from "@/util";
 
@@ -38,28 +39,33 @@ function App() {
 	const authStore = useAuthStore();
 	const navigate = useNavigate();
 	const mutation = useMutation({
-		mutationFn: serviceApi.users.login,
+		// 统一会话部署：服务端建立可撤销的身份会话（HttpOnly Cookie），浏览器不拿令牌；
+		// 旧版部署：沿用平台 JWT。
+		mutationFn: async (input: { username: string; password: string }) => {
+			if (isCookieMode()) {
+				await mutateSession((csrf) => client.service.webSession.login(input, csrf));
+				return;
+			}
+			const data = await serviceApi.users.login(input);
+			authStore.setToken(data.data!);
+			authStore.setUsername(input.username);
+		},
 		onMutate: () => {
 			banner.hideBanner();
 			form.buttonMessage = "Signing in...";
 			form.buttonDisabled = true;
 		},
-		onSuccess: (data) => {
-			authStore.setToken(data.data!);
+		onSuccess: () => {
 			banner.showBanner("success", "Login success");
 			form.buttonMessage = "Redirecting...";
 			form.buttonDisabled = true;
-
-			// 重定向到管理端仪表盘
-			authStore.setUsername(form.username);
-
 			navigate({ to: "/service" });
 		},
 		onError: (error) => {
 			banner.showErrorBanner(error, { 401: "用户名或密码错误" });
 			form.buttonDisabled = false;
 			form.buttonMessage = "Sign in";
-			authStore.removeToken();
+			if (!isCookieMode()) authStore.removeToken();
 		},
 	});
 	useEffect(() => {
