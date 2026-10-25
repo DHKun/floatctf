@@ -92,6 +92,7 @@ channel = "floatctf:realtime"
 # issuer = "http://localhost:7780"
 # allow_loopback_redirect_uris = true    # 允许 http://127.0.0.1 / localhost 回调（仅开发）
 # require_client_approval = true
+# account_chooser = true                 # prompt=select_account 显示账号选择页；false 仅为临时回滚
 # [[oidc.signing_keys]]
 # kid = "dev-key-1"
 # private_key_file = "../../../app/secrets/oidc/dev-key-1.pem"   # 相对本文件所在目录

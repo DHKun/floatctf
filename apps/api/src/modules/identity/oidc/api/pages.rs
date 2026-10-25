@@ -1,4 +1,4 @@
-//! 服务端渲染的协议交互页（登录 / 同意 / 错误），与任何可插拔前端无关。
+//! 服务端渲染的协议交互页（登录 / 账号选择 / 同意 / 错误），与任何可插拔前端无关。
 //!
 //! minijinja 对 `.html` 模板默认 HTML 转义；所有动态值（应用名、用户名、state 等）都经转义输出。
 
@@ -16,6 +16,10 @@ fn env() -> &'static Environment<'static> {
             ("layout.html", include_str!("../templates/layout.html")),
             ("login.html", include_str!("../templates/login.html")),
             ("consent.html", include_str!("../templates/consent.html")),
+            (
+                "select_account.html",
+                include_str!("../templates/select_account.html"),
+            ),
             ("error.html", include_str!("../templates/error.html")),
         ] {
             env.add_template(name, source)
@@ -163,6 +167,35 @@ mod tests {
             .unwrap();
         assert!(!resp_body.contains("<script>alert(1)</script>"));
         assert!(resp_body.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn select_account_page_escapes_identity_and_offers_three_explicit_actions() {
+        let body = env()
+            .get_template("select_account.html")
+            .unwrap()
+            .render(minijinja::context! {
+                action => "/oauth/select-account",
+                txn => "t",
+                csrf => "c",
+                client_name => "<b>RP</b>",
+                nickname => "<img src=x onerror=alert(1)>",
+                username => "alice\"><script>",
+                avatar => Option::<String>::None,
+                initial => "A",
+                account_changed => true,
+            })
+            .unwrap();
+        assert!(!body.contains("<img src=x"));
+        assert!(!body.contains("<script>"));
+        assert!(!body.contains("<b>RP</b>"));
+        for action in ["continue", "other", "cancel"] {
+            assert!(body.contains(&format!(r#"name="action" value="{action}""#)));
+        }
+        assert!(body.contains("登录账号已发生变化"));
+        // 不展示用户输入框：选择页从不收集或信任表单里的身份。
+        assert!(!body.contains("name=\"username\""));
+        assert!(!body.contains("name=\"user_id\""));
     }
 
     #[test]

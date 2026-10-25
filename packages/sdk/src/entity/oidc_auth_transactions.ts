@@ -19,4 +19,8 @@ export type OidcAuthTransactions = {
   created_at: string;
   expires_at: string;
   completed_at?: string;
+  account_choice_session_id?: string;
+  account_selected_at?: string;
+  account_selected_session_id?: string;
+  account_switch_requested_at?: string;
 };

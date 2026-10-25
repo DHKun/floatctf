@@ -1,9 +1,10 @@
 {% extends "layout.html" %}
 {% block title %}登录{% endblock %}
 {% block content %}
-<h1>登录 FloatCTF</h1>
+<h1>{% if switching %}使用其他账号登录{% else %}登录 FloatCTF{% endif %}</h1>
 <p class="muted">登录后将继续授权给以下应用：</p>
 <div class="app"><strong>{{ client_name }}<span class="badge">第三方应用</span></strong>{% if client_host %}<span class="muted">{{ client_host }}</span>{% endif %}</div>
+{% if switching %}<div class="notice">请登录你要使用的另一个 FloatCTF 账号。登录成功后，本浏览器中原来的 FloatCTF 登录状态会被替换，原账号之后需要重新输入密码。</div>{% endif %}
 {% if reauth %}<div class="notice">该应用要求你重新验证身份。</div>{% endif %}
 {% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
 <form method="post" action="{{ action }}" autocomplete="on">

@@ -20,6 +20,6 @@
     <button type="submit" name="action" value="deny">拒绝</button>
     <button type="submit" name="action" value="allow" class="primary">允许</button>
   </div>
-  <p class="muted" style="margin-top:14px">不是 {{ user_display }}？<button type="submit" name="action" value="switch" class="link">切换账号</button></p>
+  <p class="muted" style="margin-top:14px">不是 {{ user_display }}？<button type="submit" name="action" value="switch" class="link" formnovalidate>使用其他账号</button></p>
 </form>
 {% endblock %}

@@ -1,4 +1,4 @@
-//! 协议端点：authorize / login / consent / token / userinfo / logout。
+//! 协议端点：authorize / login / select-account / consent / token / userinfo / logout。
 
 use actix_web::{
     HttpRequest, HttpResponse,
@@ -15,7 +15,11 @@ use crate::infrastructure::{LogService, WebDb, WebLog};
 use crate::modules::identity::oidc::{
     OidcProvider, WebOidc,
     domain::{
-        authorize::RawParams, client_auth, error::OAuthError, metadata::PATH_LOGIN, scope, secret,
+        authorize::{Prompt, RawParams},
+        client_auth,
+        error::OAuthError,
+        metadata::{PATH_CONSENT, PATH_LOGIN, PATH_SELECT_ACCOUNT},
+        scope, secret,
     },
     flow::{self, Next},
     store,
@@ -246,13 +250,8 @@ async fn render_login(
         Ok(c) => c,
         Err(_) => return server_error_page(),
     };
-    let prompt = crate::modules::identity::oidc::domain::authorize::Prompt::from_values(
-        &scope::from_json(&txn.prompt),
-    );
-    let redirect_origin = pages::origin_of(&txn.redirect_uri);
-    let homepage_origin = client.homepage_url.as_deref().and_then(pages::origin_of);
-    let form_action_origins =
-        pages::form_action_origins(redirect_origin.as_deref(), homepage_origin.as_deref());
+    let prompt = Prompt::from_values(&scope::from_json(&txn.prompt));
+    let switching = txn.account_switch_requested_at.is_some();
     pages::html(
         status,
         "login.html",
@@ -264,10 +263,41 @@ async fn render_login(
             client_host => pages::host_of(client.homepage_url.as_deref()),
             username => username,
             error => error,
-            reauth => prompt.login || txn.max_age.is_some(),
+            reauth => !switching && (prompt.login || txn.max_age.is_some()),
+            switching => switching,
         },
-        &form_action_origins,
+        &rp_form_action_origins(txn, client),
     )
+}
+
+/// 表单提交后可能 302 去往的 RP origin（CSP form-action）。
+fn rp_form_action_origins(
+    txn: &crate::entity::oidc_auth_transactions::Model,
+    client: &crate::entity::oidc_clients::Model,
+) -> Vec<String> {
+    let redirect_origin = pages::origin_of(&txn.redirect_uri);
+    let homepage_origin = client.homepage_url.as_deref().and_then(pages::origin_of);
+    pages::form_action_origins(redirect_origin.as_deref(), homepage_origin.as_deref())
+}
+
+/// 登录页预填的用户名（只是便利，从不作为身份依据）：
+/// 用户在选择页确认了账号、随后被要求重新认证（`select_account login` / `max_age`）时预填该账号；
+/// 选择「使用其他账号」时不预填当前账号；否则用 RP 的 `login_hint`。
+async fn login_prefill(
+    db: &WebDb,
+    txn: &crate::entity::oidc_auth_transactions::Model,
+) -> Result<String, crate::api::AppError> {
+    use sea_orm::EntityTrait;
+    if txn.account_switch_requested_at.is_none()
+        && txn.account_selected_at.is_some()
+        && let Some(user_id) = txn.user_id
+        && let Some(user) = crate::entity::users::Entity::find_by_id(user_id)
+            .one(db.get_ref())
+            .await?
+    {
+        return Ok(user.username);
+    }
+    Ok(txn.login_hint.clone().unwrap_or_default())
 }
 
 /// GET /oauth/login?txn=…
@@ -286,10 +316,10 @@ pub async fn login_page(
     };
     let binding = cookie_value(&req, binding_cookie_name(oidc.secure_cookies()));
     match store::find_live_transaction(&db, txn_id, binding.as_deref()).await {
-        Ok(Some((txn, client))) => {
-            let hint = txn.login_hint.clone().unwrap_or_default();
-            render_login(&db, &txn, &client, &hint, None, StatusCode::OK).await
-        }
+        Ok(Some((txn, client))) => match login_prefill(&db, &txn).await {
+            Ok(hint) => render_login(&db, &txn, &client, &hint, None, StatusCode::OK).await,
+            Err(_) => server_error_page(),
+        },
         Ok(None) => pages::error_page(400, flow::TXN_EXPIRED_MESSAGE),
         Err(_) => server_error_page(),
     }
@@ -447,6 +477,33 @@ pub async fn login_submit(
         Err(_) => return server_error_page(),
     };
 
+    // RP 用 id_token_hint 指定了账号：其他账号的正确密码也不能建立会话或发码，
+    // 且不撤销浏览器当前的 SSO。
+    if txn
+        .id_token_hint_sub
+        .as_deref()
+        .is_some_and(|sub| sub != user.id.to_string())
+    {
+        audit(
+            &log,
+            "WARN",
+            "OIDC_LOGIN_HINT_MISMATCH",
+            format!("{} 登录的账号与应用指定的账号不一致", user.username),
+            json!({"client_id": client.client_id}),
+            Some(user.id),
+            &req,
+        );
+        return render_login(
+            &db,
+            &txn,
+            &client,
+            "",
+            Some("该应用要求使用指定的 FloatCTF 账号登录，请改用该账号。"),
+            StatusCode::OK,
+        )
+        .await;
+    }
+
     // 新会话（auth_time=now）；同一浏览器旧会话（可能是另一个账号）一并撤销。
     if let Some(old) = sso_cookie_value(&req, &oidc) {
         let _ = store::revoke_session(&db, &old).await;
@@ -468,19 +525,33 @@ pub async fn login_submit(
         "INFO",
         "OIDC_LOGIN",
         format!("{} 通过 OIDC 登录页登录", user.username),
-        json!({"client_id": client.client_id}),
+        json!({
+            "client_id": client.client_id,
+            "account_switch": txn.account_switch_requested_at.is_some(),
+        }),
         Some(user.id),
         &req,
     );
 
+    // 本事务内输入密码 = 已重新认证 + 已明确选择该账号。
     let next = async {
-        let txn = store::bind_transaction_user(&db, txn, user.id, session.id, true).await?;
-        flow::advance(&db, &oidc, txn, &client, Some((session, user))).await
+        match store::bind_password_login(&db, txn.id, user.id, session.id).await? {
+            Some(txn) => flow::advance(&db, &oidc, txn, &client, Some((session, user))).await,
+            None => Ok(Next::ErrorPage {
+                status: 400,
+                message: flow::TXN_EXPIRED_MESSAGE.into(),
+            }),
+        }
     }
     .await;
+    // 旧会话已撤销：无论事务能否继续，都要把新会话 Cookie 交给浏览器。
     match next {
         Ok(next) => respond(next, vec![sso_cookie(&oidc, cookie)]),
-        Err(_) => server_error_page(),
+        Err(_) => {
+            let mut resp = server_error_page();
+            let _ = resp.add_cookie(&sso_cookie(&oidc, cookie));
+            resp
+        }
     }
 }
 
@@ -511,13 +582,13 @@ pub async fn consent_page(
             }));
         };
         let session = flow::current_session(&db, sso_cookie_value(&req, &oidc).as_deref()).await?;
-        match session {
-            Some((s, user)) if txn.user_id == Some(user.id) && txn.session_id == Some(s.id) => {
+        match flow::consent_ready(&db, &oidc, &txn, &client, session.clone()).await? {
+            Some((_, user)) => {
                 let previous = store::find_active_consent(&db, user.id, client.id).await?;
                 Ok(Ok((txn, client, user, previous)))
             }
-            // 会话变化（过期/另一个标签页切换了账号）→ 重新走决策。
-            other => Ok(Err(flow::advance(&db, &oidc, txn, &client, other).await?)),
+            // 会话变化（过期/另一个标签页切换了账号）、尚未选择账号、已要求切换账号 → 重新走决策。
+            None => Ok(Err(flow::advance(&db, &oidc, txn, &client, session).await?)),
         }
     }
     .await;
@@ -537,15 +608,12 @@ pub async fn consent_page(
         .iter()
         .filter_map(|s| pages::scope_item(s, previously.contains(s)))
         .collect();
-    let redirect_origin = pages::origin_of(&txn.redirect_uri);
-    let homepage_origin = client.homepage_url.as_deref().and_then(pages::origin_of);
-    let form_action_origins =
-        pages::form_action_origins(redirect_origin.as_deref(), homepage_origin.as_deref());
+    let form_action_origins = rp_form_action_origins(&txn, &client);
     pages::html(
         StatusCode::OK,
         "consent.html",
         minijinja::context! {
-            action => crate::modules::identity::oidc::domain::metadata::PATH_CONSENT,
+            action => PATH_CONSENT,
             txn => txn.id.to_string(),
             csrf => csrf,
             client_name => client.name.clone(),
@@ -594,22 +662,26 @@ pub async fn consent_submit(
     }
     let action = field("action");
     if action == "switch" {
-        return redirect(&format!("{PATH_LOGIN}?txn={}", txn.id)).finish();
+        // 同意页上的「使用其他账号」（含旧版页面的「切换账号」）与选择页走同一个状态转移：
+        // 记录切换意图后强制输入密码，旧 SSO 不能再短路本事务。
+        return account_switch(&db, &log, &req, &txn, &client, &field("csrf")).await;
     }
 
     let session = match flow::current_session(&db, sso_cookie_value(&req, &oidc).as_deref()).await {
         Ok(s) => s,
         Err(_) => return server_error_page(),
     };
-    let (session, user) = match session {
-        Some((s, u)) if txn.user_id == Some(u.id) && txn.session_id == Some(s.id) => (s, u),
-        other => {
-            return match flow::advance(&db, &oidc, txn, &client, other).await {
-                Ok(next) => respond(next, vec![]),
-                Err(_) => server_error_page(),
-            };
-        }
-    };
+    let (session, user) =
+        match flow::consent_ready(&db, &oidc, &txn, &client, session.clone()).await {
+            Ok(Some(ready)) => ready,
+            Ok(None) => {
+                return match flow::advance(&db, &oidc, txn, &client, session).await {
+                    Ok(next) => respond(next, vec![]),
+                    Err(_) => server_error_page(),
+                };
+            }
+            Err(_) => return server_error_page(),
+        };
 
     let result = if action == "allow" {
         let selected: Vec<String> = form
@@ -654,6 +726,229 @@ pub async fn consent_submit(
     match result {
         Ok(next) => respond(next, vec![]),
         Err(_) => server_error_page(),
+    }
+}
+
+// ── 账号选择页（prompt=select_account） ─────────────────────────────────────
+
+/// 「使用其他账号」：记录切换意图（并作废当前页 CSRF），然后去登录页强制输入密码。
+async fn account_switch(
+    db: &WebDb,
+    log: &WebLog,
+    req: &HttpRequest,
+    txn: &crate::entity::oidc_auth_transactions::Model,
+    client: &crate::entity::oidc_clients::Model,
+    presented_csrf: &str,
+) -> HttpResponse {
+    match store::request_account_switch(db, txn.id, presented_csrf).await {
+        Ok(true) => {
+            audit(
+                log,
+                "INFO",
+                "OIDC_ACCOUNT_SWITCH",
+                format!("应用 {} 的授权中选择使用其他账号", client.client_id),
+                json!({"client_id": client.client_id}),
+                None,
+                req,
+            );
+            redirect(&format!("{PATH_LOGIN}?txn={}", txn.id)).finish()
+        }
+        Ok(false) => pages::error_page(400, flow::TXN_EXPIRED_MESSAGE),
+        Err(_) => server_error_page(),
+    }
+}
+
+/// 账号选择页只展示同源相对路径头像（CSP `img-src 'self'`）；其余情况显示首字母。
+fn same_origin_avatar(avatar: Option<&str>) -> Option<String> {
+    avatar
+        .filter(|a| a.starts_with('/') && !a.starts_with("//") && !a.contains('\\'))
+        .map(str::to_string)
+}
+
+async fn render_select_account(
+    db: &WebDb,
+    txn: &crate::entity::oidc_auth_transactions::Model,
+    client: &crate::entity::oidc_clients::Model,
+    current: &flow::SessionUser,
+    account_changed: bool,
+) -> HttpResponse {
+    let (session, user) = current;
+    let csrf = match store::issue_account_choice_csrf(db, txn.id, session.id).await {
+        Ok(c) => c,
+        Err(_) => return server_error_page(),
+    };
+    let initial = user
+        .nickname
+        .chars()
+        .next()
+        .or_else(|| user.username.chars().next())
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default();
+    pages::html(
+        StatusCode::OK,
+        "select_account.html",
+        minijinja::context! {
+            action => PATH_SELECT_ACCOUNT,
+            txn => txn.id.to_string(),
+            csrf => csrf,
+            client_name => client.name.clone(),
+            client_host => pages::host_of(client.homepage_url.as_deref()),
+            nickname => user.nickname.clone(),
+            username => user.username.clone(),
+            avatar => same_origin_avatar(user.avatar.as_deref()),
+            initial => initial,
+            account_changed => account_changed,
+        },
+        &rp_form_action_origins(txn, client),
+    )
+}
+
+/// GET /oauth/select-account?txn=…
+///
+/// 纯渲染：从不改变选择、从不发码。状态机不在「等待选择」时，只会把浏览器带到当前应处的
+/// 登录/同意页，或显示失效页。
+#[get("/oauth/select-account")]
+pub async fn select_account_page(
+    req: HttpRequest,
+    query: web::Query<TxnQuery>,
+    oidc: Option<WebOidc>,
+    db: WebDb,
+) -> HttpResponse {
+    let Some(oidc) = oidc else {
+        return not_enabled();
+    };
+    let Some(txn_id) = flow::parse_txn_id(query.txn.as_deref()) else {
+        return pages::error_page(400, flow::TXN_EXPIRED_MESSAGE);
+    };
+    let binding = cookie_value(&req, binding_cookie_name(oidc.secure_cookies()));
+    let result = async {
+        let Some((txn, client)) =
+            store::find_live_transaction(&db, txn_id, binding.as_deref()).await?
+        else {
+            return Ok(None);
+        };
+        let session = flow::current_session(&db, sso_cookie_value(&req, &oidc).as_deref()).await?;
+        let (step, session) = flow::evaluate(&db, &oidc, &txn, &client, session).await?;
+        Ok::<_, crate::api::AppError>(Some((txn, client, step, session)))
+    }
+    .await;
+    match result {
+        Ok(Some((txn, client, flow::Step::SelectAccount, Some(current)))) => {
+            render_select_account(&db, &txn, &client, &current, false).await
+        }
+        Ok(Some((txn, _, flow::Step::Login, _))) => {
+            redirect(&format!("{PATH_LOGIN}?txn={}", txn.id)).finish()
+        }
+        Ok(Some((txn, _, flow::Step::Consent, _))) => {
+            redirect(&format!("{PATH_CONSENT}?txn={}", txn.id)).finish()
+        }
+        Ok(_) => pages::error_page(400, flow::TXN_EXPIRED_MESSAGE),
+        Err(_) => server_error_page(),
+    }
+}
+
+/// POST /oauth/select-account（action = continue | other | cancel）
+#[post("/oauth/select-account")]
+pub async fn select_account_submit(
+    req: HttpRequest,
+    body: web::Bytes,
+    oidc: Option<WebOidc>,
+    db: WebDb,
+    log: WebLog,
+) -> HttpResponse {
+    let Some(oidc) = oidc else {
+        return not_enabled();
+    };
+    if !is_form(&req) || !same_origin(&req, &oidc) {
+        return pages::error_page(400, "请求来源无效。");
+    }
+    let form = parse_pairs(&body);
+    let field = |name: &str| {
+        form.single(name)
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let Some(txn_id) = flow::parse_txn_id(Some(&field("txn"))) else {
+        return pages::error_page(400, flow::TXN_EXPIRED_MESSAGE);
+    };
+    let binding = cookie_value(&req, binding_cookie_name(oidc.secure_cookies()));
+    let (txn, client) = match store::find_live_transaction(&db, txn_id, binding.as_deref()).await {
+        Ok(Some(found)) => found,
+        Ok(None) => return pages::error_page(400, flow::TXN_EXPIRED_MESSAGE),
+        Err(_) => return server_error_page(),
+    };
+    let csrf = field("csrf");
+    if !store::csrf_matches(&txn, &csrf) {
+        return pages::error_page(400, "页面已失效（CSRF 校验失败），请返回应用重新登录。");
+    }
+
+    match field("action").as_str() {
+        "cancel" => {
+            audit(
+                &log,
+                "INFO",
+                "OIDC_ACCOUNT_SELECT_CANCEL",
+                format!("取消为应用 {} 选择账号", client.client_id),
+                json!({"client_id": client.client_id}),
+                None,
+                &req,
+            );
+            match flow::finish_with_error(
+                &db,
+                &oidc,
+                &txn,
+                OAuthError::access_denied("user cancelled account selection"),
+            )
+            .await
+            {
+                Ok(next) => respond(next, vec![]),
+                Err(_) => server_error_page(),
+            }
+        }
+        "other" => account_switch(&db, &log, &req, &txn, &client, &csrf).await,
+        "continue" => {
+            let session =
+                match flow::current_session(&db, sso_cookie_value(&req, &oidc).as_deref()).await {
+                    Ok(s) => flow::usable_session(&txn, s),
+                    Err(_) => return server_error_page(),
+                };
+            let Some((session, user)) = session else {
+                // 会话已过期/被撤销/用户被删除：不能免密继续，交给状态机（→ 登录页）。
+                return match flow::advance(&db, &oidc, txn, &client, None).await {
+                    Ok(next) => respond(next, vec![]),
+                    Err(_) => server_error_page(),
+                };
+            };
+            if txn.account_choice_session_id != Some(session.id) {
+                // 展示后浏览器的登录账号变了（另一标签页切换/重新登录）：绝不悄悄选中新账号。
+                return render_select_account(&db, &txn, &client, &(session, user), true).await;
+            }
+            let confirmed =
+                match store::confirm_account_selection(&db, txn.id, session.id, user.id, &csrf)
+                    .await
+                {
+                    Ok(Some(txn)) => txn,
+                    // 并发/重复提交中落败，或事务刚好失效。
+                    Ok(None) => return pages::error_page(400, flow::TXN_EXPIRED_MESSAGE),
+                    Err(_) => return server_error_page(),
+                };
+            audit(
+                &log,
+                "INFO",
+                "OIDC_ACCOUNT_SELECTED",
+                format!("{} 确认以当前账号继续访问 {}", user.username, client.name),
+                json!({"client_id": client.client_id}),
+                Some(user.id),
+                &req,
+            );
+            match flow::advance(&db, &oidc, confirmed, &client, Some((session, user))).await {
+                Ok(next) => respond(next, vec![]),
+                Err(_) => server_error_page(),
+            }
+        }
+        _ => pages::error_page(400, "无效的操作。"),
     }
 }
 
@@ -886,4 +1181,28 @@ pub async fn logout(req: HttpRequest, oidc: Option<WebOidc>, db: WebDb) -> HttpR
         oidc.secure_cookies(),
     ));
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_origin_avatar;
+
+    #[test]
+    fn chooser_avatar_is_limited_to_same_origin_relative_paths() {
+        assert_eq!(
+            same_origin_avatar(Some("/public/avatars/a.png")).as_deref(),
+            Some("/public/avatars/a.png")
+        );
+        for rejected in [
+            "https://evil.example/a.png",
+            "//evil.example/a.png",
+            "/\\evil.example/a.png",
+            "javascript:alert(1)",
+            "data:image/png;base64,AAAA",
+            "",
+        ] {
+            assert_eq!(same_origin_avatar(Some(rejected)), None, "{rejected}");
+        }
+        assert_eq!(same_origin_avatar(None), None);
+    }
 }

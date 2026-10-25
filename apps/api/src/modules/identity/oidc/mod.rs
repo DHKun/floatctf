@@ -73,7 +73,7 @@ impl OidcProvider {
 
 pub type WebOidc = web::Data<OidcProvider>;
 
-/// 协议端点（根路径）：Discovery / JWKS / authorize / login / consent / token / userinfo / logout。
+/// 协议端点（根路径）：Discovery / JWKS / authorize / login / select-account / consent / token / userinfo / logout。
 pub fn configure_protocol_routes(cfg: &mut ServiceConfig) {
     cfg.service(api::discovery::openid_configuration)
         .service(api::discovery::oauth_authorization_server)
@@ -81,6 +81,8 @@ pub fn configure_protocol_routes(cfg: &mut ServiceConfig) {
         .service(api::protocol::authorize)
         .service(api::protocol::login_page)
         .service(api::protocol::login_submit)
+        .service(api::protocol::select_account_page)
+        .service(api::protocol::select_account_submit)
         .service(api::protocol::consent_page)
         .service(api::protocol::consent_submit)
         .service(api::protocol::token)

@@ -18,7 +18,7 @@ use super::domain::authorize::{self, AuthorizationRequest, Prompt, RawParams};
 use super::domain::claims::{self, IdTokenClaims, UserSnapshot};
 use super::domain::client_auth::PresentedClientAuth;
 use super::domain::error::OAuthError;
-use super::domain::metadata::{PATH_CONSENT, PATH_LOGIN};
+use super::domain::metadata::{PATH_CONSENT, PATH_LOGIN, PATH_SELECT_ACCOUNT};
 use super::domain::{pkce, redirect_uri, scope, secret};
 use super::store;
 
@@ -144,7 +144,160 @@ fn ts(t: &DateTime<FixedOffset>) -> i64 {
     t.timestamp()
 }
 
-/// 判断事务下一步：登录 → 同意 → 发码。`prompt=none` 时不展示任何页面。
+// ── 授权事务状态机 ──────────────────────────────────────────────────────────
+
+/// 授权事务的下一步。由 [`decide`] 纯函数给出，[`advance`] 负责执行。
+///
+/// 阶段顺序固定为「账号选择 → 认证 → 授权同意 → 发码」，三种交互页互相独立：
+/// `select_account` 只决定是否展示账号选择页，绝不会导向同意页。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// 输入密码：无可用 SSO，或 `prompt=login` / `max_age` 要求重新认证。
+    Login,
+    /// 有可用 SSO 且 `prompt=select_account`：等待用户在账号选择页明确选择。
+    SelectAccount,
+    /// 需要授权同意（`prompt=consent` 或已有授权不覆盖本次 scope）。
+    Consent,
+    /// 条件全部满足，直接发码。
+    Issue,
+    /// `prompt=none` 下无法无交互完成，返回对应标准错误（永不渲染页面）。
+    Required(Required),
+}
+
+/// `prompt=none` 时的标准错误（OIDC Core §3.1.2.6）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Required {
+    Login,
+    AccountSelection,
+    Consent,
+}
+
+impl Required {
+    fn error(self) -> OAuthError {
+        match self {
+            Self::Login => OAuthError::login_required("login required"),
+            Self::AccountSelection => {
+                OAuthError::account_selection_required("account selection required")
+            }
+            Self::Consent => OAuthError::consent_required("consent required"),
+        }
+    }
+}
+
+/// [`decide`] 的输入：当前可用 SSO 会话在本事务中的状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionFacts {
+    /// 本事务内用户已确认该会话（选择页「继续」或本事务内输入密码）。
+    pub confirmed_in_txn: bool,
+    /// 本事务内刚为该会话输入过密码（满足 `prompt=login` / `max_age`）。
+    pub fresh_in_txn: bool,
+    /// 会话的认证时间（Unix 秒）。
+    pub auth_time: i64,
+    /// 用户对该应用的有效授权覆盖本次申请的 scope。
+    pub consented: bool,
+}
+
+/// 纯决策：给定 prompt / max_age 与（经 [`usable_session`] 过滤后的）会话状态，返回下一步。
+pub fn decide(
+    prompt: &Prompt,
+    max_age: Option<i64>,
+    account_chooser: bool,
+    session: Option<SessionFacts>,
+    now: i64,
+) -> Step {
+    let Some(s) = session else {
+        // 没有可用 SSO：输入密码本身就是本次身份选择，不再额外弹选择页。
+        return if prompt.none {
+            Step::Required(Required::Login)
+        } else {
+            Step::Login
+        };
+    };
+    if account_chooser && prompt.select_account && !s.confirmed_in_txn {
+        // prompt=none 与 select_account 在解析期就互斥；这里防御性地返回规范错误。
+        return if prompt.none {
+            Step::Required(Required::AccountSelection)
+        } else {
+            Step::SelectAccount
+        };
+    }
+    if !s.fresh_in_txn && authorize::requires_fresh_login(prompt, max_age, s.auth_time, now) {
+        return if prompt.none {
+            Step::Required(Required::Login)
+        } else {
+            Step::Login
+        };
+    }
+    // 回滚模式（account_chooser = false）保留旧语义：select_account 导向同意页。
+    let legacy_select_account = !account_chooser && prompt.select_account;
+    if prompt.consent || legacy_select_account || !s.consented {
+        return if prompt.none {
+            Step::Required(Required::Consent)
+        } else {
+            Step::Consent
+        };
+    }
+    Step::Issue
+}
+
+/// 本事务内用户是否已确认该会话。
+pub fn account_confirmed(txn: &oidc_auth_transactions::Model, session_id: Uuid) -> bool {
+    txn.account_selected_at.is_some() && txn.account_selected_session_id == Some(session_id)
+}
+
+/// 当前浏览器的 SSO 会话能否用于本事务：
+/// - `id_token_hint` 指向别的用户 → 不可用；
+/// - 用户已选择「使用其他账号」，但该会话不是本事务内重新输入密码得到的 → 不可用
+///   （旧 Cookie 不能把「使用其他账号」短路回原账号）。
+pub fn usable_session(
+    txn: &oidc_auth_transactions::Model,
+    session: Option<SessionUser>,
+) -> Option<SessionUser> {
+    session.filter(|(s, user)| {
+        let hint_ok = txn
+            .id_token_hint_sub
+            .as_deref()
+            .is_none_or(|sub| sub == user.id.to_string());
+        let switch_ok = txn.account_switch_requested_at.is_none() || account_confirmed(txn, s.id);
+        hint_ok && switch_ok
+    })
+}
+
+/// 收集决策所需事实并计算下一步。返回经过滤的可用会话，供调用方继续使用。
+pub async fn evaluate(
+    db: &DatabaseConnection,
+    oidc: &OidcProvider,
+    txn: &oidc_auth_transactions::Model,
+    client: &oidc_clients::Model,
+    session: Option<SessionUser>,
+) -> Result<(Step, Option<SessionUser>), AppError> {
+    let session = usable_session(txn, session);
+    let facts = match &session {
+        None => None,
+        Some((s, user)) => {
+            let requested = scope::from_json(&txn.scopes);
+            let consented = store::find_active_consent(db, user.id, client.id)
+                .await?
+                .is_some_and(|c| scope::covers(&scope::from_json(&c.scopes), &requested));
+            Some(SessionFacts {
+                confirmed_in_txn: account_confirmed(txn, s.id),
+                fresh_in_txn: txn.authenticated_at.is_some() && txn.session_id == Some(s.id),
+                auth_time: ts(&s.auth_time),
+                consented,
+            })
+        }
+    };
+    let step = decide(
+        &txn_prompt(txn),
+        txn.max_age.map(i64::from),
+        oidc.config.account_chooser,
+        facts,
+        Utc::now().timestamp(),
+    );
+    Ok((step, session))
+}
+
+/// 推进事务：执行 [`decide`] 的结果。`prompt=none` 时不展示任何页面。
 pub async fn advance(
     db: &DatabaseConnection,
     oidc: &OidcProvider,
@@ -152,70 +305,49 @@ pub async fn advance(
     client: &oidc_clients::Model,
     session: Option<SessionUser>,
 ) -> Result<Next, AppError> {
-    let prompt = txn_prompt(&txn);
-    let now = Utc::now().timestamp();
-
-    // id_token_hint 指向别的用户 → 当前会话不可用。
-    let session = session.filter(|(_, user)| {
-        txn.id_token_hint_sub
-            .as_deref()
-            .is_none_or(|sub| sub == user.id.to_string())
-    });
-    let needs_login = match &session {
-        None => true,
-        Some((s, _)) => {
-            // 本事务内已重新输入过密码（且就是当前会话）即满足 prompt=login / max_age。
-            let fresh_in_txn = txn.authenticated_at.is_some() && txn.session_id == Some(s.id);
-            !fresh_in_txn
-                && authorize::requires_fresh_login(
-                    &prompt,
-                    txn.max_age.map(i64::from),
-                    ts(&s.auth_time),
-                    now,
-                )
-        }
-    };
-    if needs_login {
-        if prompt.none {
-            return finish_with_error(db, oidc, &txn, OAuthError::login_required("login required"))
-                .await;
-        }
-        return Ok(Next::RedirectLocal(format!("{PATH_LOGIN}?txn={}", txn.id)));
-    }
-    let (session, user) = session.expect("checked above");
-
-    let requested = scope::from_json(&txn.scopes);
-    let consent = store::find_active_consent(db, user.id, client.id).await?;
-    let consented = consent
-        .as_ref()
-        .is_some_and(|c| scope::covers(&scope::from_json(&c.scopes), &requested));
-    let needs_interaction = prompt.consent || prompt.select_account || !consented;
-
-    let txn = if txn.user_id != Some(user.id) || txn.session_id != Some(session.id) {
-        let fresh = txn.authenticated_at.is_some() && txn.session_id == Some(session.id);
-        store::bind_transaction_user(db, txn, user.id, session.id, fresh).await?
-    } else {
-        txn
-    };
-
-    if needs_interaction {
-        if prompt.none {
-            return finish_with_error(
-                db,
-                oidc,
-                &txn,
-                OAuthError::consent_required("consent required"),
-            )
-            .await;
-        }
-        return Ok(Next::RedirectLocal(format!(
-            "{PATH_CONSENT}?txn={}",
+    let (step, session) = evaluate(db, oidc, &txn, client, session).await?;
+    match step {
+        Step::Required(required) => finish_with_error(db, oidc, &txn, required.error()).await,
+        Step::Login => Ok(Next::RedirectLocal(format!("{PATH_LOGIN}?txn={}", txn.id))),
+        Step::SelectAccount => Ok(Next::RedirectLocal(format!(
+            "{PATH_SELECT_ACCOUNT}?txn={}",
             txn.id
-        )));
+        ))),
+        Step::Consent | Step::Issue => {
+            let (session, user) = session.expect("decide: Consent/Issue require a usable session");
+            let txn = if txn.user_id != Some(user.id) || txn.session_id != Some(session.id) {
+                let fresh = txn.authenticated_at.is_some() && txn.session_id == Some(session.id);
+                store::bind_transaction_user(db, txn, user.id, session.id, fresh).await?
+            } else {
+                txn
+            };
+            if step == Step::Consent {
+                return Ok(Next::RedirectLocal(format!(
+                    "{PATH_CONSENT}?txn={}",
+                    txn.id
+                )));
+            }
+            // 已有授权覆盖本次 scope：直接发码（只发本次申请的 scope）。
+            let requested = scope::from_json(&txn.scopes);
+            issue_code(db, oidc, &txn, client, &session, &user, &requested).await
+        }
     }
+}
 
-    // 已有授权覆盖本次 scope：直接发码（只发本次申请的 scope）。
-    issue_code(db, oidc, &txn, client, &session, &user, &requested).await
+/// 同意页可以展示/提交的前提：状态机确实停在同意阶段，且事务已绑定到当前会话。
+///
+/// 否则（会话变化、跳过了账号选择、用户已要求切换账号……）调用方应改走 [`advance`]。
+pub async fn consent_ready(
+    db: &DatabaseConnection,
+    oidc: &OidcProvider,
+    txn: &oidc_auth_transactions::Model,
+    client: &oidc_clients::Model,
+    session: Option<SessionUser>,
+) -> Result<Option<SessionUser>, AppError> {
+    let (step, session) = evaluate(db, oidc, txn, client, session).await?;
+    Ok(session.filter(|(s, user)| {
+        step == Step::Consent && txn.user_id == Some(user.id) && txn.session_id == Some(s.id)
+    }))
 }
 
 /// 结束事务并把错误带回 RP。
@@ -567,5 +699,260 @@ mod tests {
             granted_from_selection(&s(&["openid"]), &s(&["profile", "email"])),
             s(&["openid"])
         );
+    }
+
+    // ── decide()：prompt 组合矩阵 ──────────────────────────────────────────
+
+    const NOW: i64 = 1_800_000_000;
+
+    fn prompt(raw: &str) -> Prompt {
+        Prompt::parse(Some(raw)).unwrap()
+    }
+
+    /// 有效 SSO：一小时前认证、已同意、本事务内未确认 / 未重新认证。
+    fn sso() -> SessionFacts {
+        SessionFacts {
+            confirmed_in_txn: false,
+            fresh_in_txn: false,
+            auth_time: NOW - 3600,
+            consented: true,
+        }
+    }
+
+    fn step(raw: &str, session: Option<SessionFacts>) -> Step {
+        decide(&prompt(raw), None, true, session, NOW)
+    }
+
+    #[test]
+    fn no_prompt_keeps_legacy_silent_sso() {
+        assert_eq!(
+            step("", Some(sso())),
+            Step::Issue,
+            "已登录且已同意的 RP 不受影响"
+        );
+        assert_eq!(step("", None), Step::Login);
+        let not_consented = SessionFacts {
+            consented: false,
+            ..sso()
+        };
+        assert_eq!(step("", Some(not_consented)), Step::Consent);
+    }
+
+    #[test]
+    fn select_account_shows_chooser_before_anything_else_and_never_consent() {
+        assert_eq!(step("select_account", Some(sso())), Step::SelectAccount);
+        // 无 SSO：直接登录页，不多一层空选择页
+        assert_eq!(step("select_account", None), Step::Login);
+        // 选择后：已同意 → 直接发码，不重复同意
+        let confirmed = SessionFacts {
+            confirmed_in_txn: true,
+            ..sso()
+        };
+        assert_eq!(step("select_account", Some(confirmed)), Step::Issue);
+        // 选择后：未同意 → 同意页
+        let fresh_user = SessionFacts {
+            confirmed_in_txn: true,
+            consented: false,
+            ..sso()
+        };
+        assert_eq!(step("select_account", Some(fresh_user)), Step::Consent);
+    }
+
+    #[test]
+    fn select_account_combines_with_consent_and_login_as_separate_steps() {
+        let confirmed = SessionFacts {
+            confirmed_in_txn: true,
+            ..sso()
+        };
+        assert_eq!(
+            step("select_account consent", Some(sso())),
+            Step::SelectAccount
+        );
+        assert_eq!(
+            step("select_account consent", Some(confirmed)),
+            Step::Consent
+        );
+        assert_eq!(
+            step("select_account login", Some(sso())),
+            Step::SelectAccount
+        );
+        assert_eq!(step("select_account login", Some(confirmed)), Step::Login);
+        let reauthenticated = SessionFacts {
+            confirmed_in_txn: true,
+            fresh_in_txn: true,
+            ..sso()
+        };
+        assert_eq!(
+            step("select_account login", Some(reauthenticated)),
+            Step::Issue
+        );
+    }
+
+    #[test]
+    fn login_and_consent_prompts_do_not_show_chooser() {
+        assert_eq!(step("login", Some(sso())), Step::Login);
+        assert_eq!(step("consent", Some(sso())), Step::Consent);
+        let fresh = SessionFacts {
+            fresh_in_txn: true,
+            ..sso()
+        };
+        assert_eq!(step("login", Some(fresh)), Step::Issue);
+    }
+
+    #[test]
+    fn max_age_forces_reauthentication_after_selection() {
+        let confirmed = SessionFacts {
+            confirmed_in_txn: true,
+            ..sso()
+        };
+        let p = prompt("select_account");
+        assert_eq!(
+            decide(&p, Some(60), true, Some(confirmed), NOW),
+            Step::Login
+        );
+        assert_eq!(
+            decide(&p, Some(7200), true, Some(confirmed), NOW),
+            Step::Issue
+        );
+        assert_eq!(decide(&p, Some(0), true, Some(confirmed), NOW), Step::Login);
+    }
+
+    #[test]
+    fn prompt_none_never_renders_ui() {
+        assert_eq!(step("none", Some(sso())), Step::Issue);
+        assert_eq!(step("none", None), Step::Required(Required::Login));
+        let not_consented = SessionFacts {
+            consented: false,
+            ..sso()
+        };
+        assert_eq!(
+            step("none", Some(not_consented)),
+            Step::Required(Required::Consent)
+        );
+        let p = prompt("none");
+        assert_eq!(
+            decide(&p, Some(0), true, Some(sso()), NOW),
+            Step::Required(Required::Login)
+        );
+        // 防御：即使 none 与 select_account 被构造在一起，也只返回错误而不渲染选择页。
+        let forged = Prompt {
+            none: true,
+            select_account: true,
+            ..Prompt::default()
+        };
+        assert_eq!(
+            decide(&forged, None, true, Some(sso()), NOW),
+            Step::Required(Required::AccountSelection)
+        );
+        assert_eq!(
+            Required::AccountSelection.error().error,
+            "account_selection_required"
+        );
+    }
+
+    #[test]
+    fn rollback_switch_restores_legacy_select_account_behaviour() {
+        let p = prompt("select_account");
+        assert_eq!(decide(&p, None, false, Some(sso()), NOW), Step::Consent);
+        assert_eq!(decide(&p, None, false, None, NOW), Step::Login);
+    }
+
+    fn txn_row() -> oidc_auth_transactions::Model {
+        let now = Utc::now().fixed_offset();
+        oidc_auth_transactions::Model {
+            id: Uuid::new_v4(),
+            oidc_client_id: Uuid::new_v4(),
+            browser_binding_hash: String::new(),
+            csrf_hash: String::new(),
+            redirect_uri: "https://rp.example.com/cb".into(),
+            scopes: serde_json::json!(["openid"]),
+            state: None,
+            nonce: None,
+            code_challenge: None,
+            code_challenge_method: None,
+            prompt: serde_json::json!(["select_account"]),
+            max_age: None,
+            login_hint: None,
+            id_token_hint_sub: None,
+            user_id: None,
+            session_id: None,
+            authenticated_at: None,
+            created_at: now,
+            expires_at: now,
+            completed_at: None,
+            account_choice_session_id: None,
+            account_selected_at: None,
+            account_selected_session_id: None,
+            account_switch_requested_at: None,
+        }
+    }
+
+    fn session_user(user_id: Uuid) -> SessionUser {
+        let now = Utc::now().fixed_offset();
+        (
+            oidc_browser_sessions::Model {
+                id: Uuid::new_v4(),
+                session_hash: String::new(),
+                user_id,
+                auth_time: now,
+                established_via: "oidc_login".into(),
+                created_at: now,
+                last_seen_at: now,
+                expires_at: now,
+                revoked_at: None,
+            },
+            users::Model {
+                id: user_id,
+                username: "alice".into(),
+                nickname: "Alice".into(),
+                password: String::new(),
+                email: String::new(),
+                created_at: now,
+                updated_at: now,
+                avatar: None,
+            },
+        )
+    }
+
+    #[test]
+    fn switch_request_hides_old_sso_until_password_login_in_txn() {
+        let alice = session_user(Uuid::new_v4());
+        let mut txn = txn_row();
+        assert!(usable_session(&txn, Some(alice.clone())).is_some());
+
+        txn.account_switch_requested_at = Some(Utc::now().fixed_offset());
+        assert!(
+            usable_session(&txn, Some(alice.clone())).is_none(),
+            "选择「使用其他账号」后旧 Cookie 不能短路"
+        );
+
+        // 在本事务内输入密码得到的新会话可用
+        let bob = session_user(Uuid::new_v4());
+        txn.account_selected_at = Some(Utc::now().fixed_offset());
+        txn.account_selected_session_id = Some(bob.0.id);
+        assert!(usable_session(&txn, Some(bob.clone())).is_some());
+        assert!(usable_session(&txn, Some(alice)).is_none());
+        assert!(account_confirmed(&txn, bob.0.id));
+    }
+
+    #[test]
+    fn id_token_hint_for_another_user_hides_session() {
+        let alice = session_user(Uuid::new_v4());
+        let mut txn = txn_row();
+        txn.id_token_hint_sub = Some(Uuid::new_v4().to_string());
+        assert!(usable_session(&txn, Some(alice.clone())).is_none());
+        txn.id_token_hint_sub = Some(alice.1.id.to_string());
+        assert!(usable_session(&txn, Some(alice)).is_some());
+    }
+
+    #[test]
+    fn confirmation_is_bound_to_the_exact_session() {
+        let alice = session_user(Uuid::new_v4());
+        let mut txn = txn_row();
+        txn.account_selected_session_id = Some(alice.0.id);
+        assert!(!account_confirmed(&txn, alice.0.id), "缺少确认时间不算确认");
+        txn.account_selected_at = Some(Utc::now().fixed_offset());
+        assert!(account_confirmed(&txn, alice.0.id));
+        assert!(!account_confirmed(&txn, Uuid::new_v4()));
     }
 }

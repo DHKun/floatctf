@@ -70,6 +70,7 @@ pub fn test_config() -> OidcConfig {
         secret_rotation_grace_secs: 3600,
         allow_loopback_redirect_uris: true,
         require_client_approval: true,
+        account_chooser: true,
     }
 }
 
