@@ -18,15 +18,21 @@ import { useSessionStore } from "@/stores/SessionStore";
 
 import { formatApiError } from "./apiErrorMessage";
 
-/** 头像：只用平台上传的同源图片；没有头像时显示首字母（Primer Avatar 需要 src，这里自绘回退）。 */
-function AccountAvatar({ account, size = 20 }: { account: Pick<WebAccount, "avatar" | "nickname" | "username">; size?: number }) {
-	if (account.avatar?.startsWith("/public/")) {
-		return <Avatar src={account.avatar} size={size} alt="" />;
+/**
+ * 头像：只用平台上传的同源图片（`/public/...`）；没有头像或图片加载失败（404、存储未公开等）时显示首字母，
+ * 不出现浏览器的破图标记。
+ */
+export function AccountAvatar({ account, size = 20 }: { account: Pick<WebAccount, "avatar" | "nickname" | "username">; size?: number }) {
+	const [failedSrc, setFailedSrc] = useState<string | null>(null);
+	const src = account.avatar?.startsWith("/public/") ? account.avatar : null;
+	if (src && failedSrc !== src) {
+		return <Avatar src={src} size={size} alt="" onError={() => setFailedSrc(src)} />;
 	}
 	const initial = (account.nickname || account.username).trim().charAt(0).toUpperCase() || "?";
 	return (
 		<span
 			aria-hidden="true"
+			data-avatar-fallback=""
 			className="d-inline-flex flex-items-center flex-justify-center circle color-bg-subtle color-fg-default text-bold"
 			style={{ width: size, height: size, fontSize: Math.round(size * 0.45) }}
 		>

@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useSessionStore } from "@/stores/SessionStore";
-import { AccountMenu, GlobalLogoutNotice } from "../AccountMenu";
+import { AccountAvatar, AccountMenu, GlobalLogoutNotice } from "../AccountMenu";
 
 /**
  * 主站账号菜单：只列服务端给出的本浏览器有效账号；切换 / 退出都等服务端确认；
@@ -163,5 +163,28 @@ describe("AccountMenu", () => {
 		expect(await screen.findByText("添加账号")).toBeTruthy();
 		expect(screen.getByText("退出本浏览器中的全部账号")).toBeTruthy();
 		expect(screen.getByText("只退出 FloatCTF，不影响已登录的第三方应用")).toBeTruthy();
+	});
+
+	it("falls back to the initial instead of a broken image when the avatar cannot be loaded", () => {
+		const { container } = render(
+			<ThemeProvider>
+				<AccountAvatar account={{ avatar: "/public/images/missing.png", nickname: "Alice 同学", username: "alice" }} />
+			</ThemeProvider>,
+		);
+		const img = container.querySelector("img");
+		expect(img?.getAttribute("src")).toBe("/public/images/missing.png");
+		fireEvent.error(img!);
+		expect(container.querySelector("img")).toBeNull();
+		expect(container.querySelector("[data-avatar-fallback]")?.textContent).toBe("A");
+	});
+
+	it("never renders avatars outside the platform's public storage", () => {
+		const { container } = render(
+			<ThemeProvider>
+				<AccountAvatar account={{ avatar: "https://evil.example/x.png", nickname: "", username: "bob" }} />
+			</ThemeProvider>,
+		);
+		expect(container.querySelector("img")).toBeNull();
+		expect(container.textContent).toBe("B");
 	});
 });

@@ -17,6 +17,7 @@ import { z } from "zod";
 
 import { client, serviceApi } from "@/api";
 import { useMsgInlineBanner } from "@/components";
+import { AccountAvatar } from "@/components/AccountMenu";
 import { AppLink } from "@/navigation";
 import { isCookieMode, isSignedIn, mutateSession } from "@/session";
 import { useAuthStore } from "@/stores/AuthStore";
@@ -65,13 +66,7 @@ function BrowserAccounts({ accounts }: { accounts: WebAccount[] }) {
 							disabled={select.isPending}
 						>
 							<ActionList.LeadingVisual>
-								{account.avatar?.startsWith("/public/") ? (
-									<Avatar src={account.avatar} size={20} alt="" />
-								) : (
-									<span aria-hidden="true" className="text-bold">
-										{(account.nickname || account.username).charAt(0).toUpperCase()}
-									</span>
-								)}
+								<AccountAvatar account={account} />
 							</ActionList.LeadingVisual>
 							{account.nickname}
 							<ActionList.Description variant="block">@{account.username}</ActionList.Description>
