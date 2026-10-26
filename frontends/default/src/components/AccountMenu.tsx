@@ -49,11 +49,8 @@ export function AccountMenu() {
 	const confirm = useConfirm();
 	const [error, setError] = useState<{ title: string; message: string } | null>(null);
 	const [pending, setPending] = useState(false);
-	const [report, setReport] = useState<GlobalLogoutReport | null>(null);
+	const setLogoutReport = useSessionStore((s) => s.setLogoutReport);
 
-	if (report) {
-		return <GlobalLogoutResult report={report} onClose={() => { setReport(null); navigate({ to: "/" }); }} />;
-	}
 	if (!status?.user) return null;
 	const current = status.user;
 	const others = status.accounts.filter((a) => !a.active);
@@ -94,7 +91,8 @@ export function AccountMenu() {
 		if (!ok) return;
 		await run("退出未完成", async () => {
 			const next = await mutateSession((csrf) => client.service.webSession.logout("global", null, csrf));
-			setReport(next.logout_report ?? { deliveries: [], without_backchannel: [] });
+			// 退出后 /service 守卫会把页面带回登录页并卸载本菜单：结果交给根布局的 GlobalLogoutNotice 展示。
+			setLogoutReport(next.logout_report ?? { deliveries: [], without_backchannel: [] });
 		});
 	};
 
@@ -202,7 +200,25 @@ const STATE_TEXT = {
 	failed: { icon: XCircleIcon, text: "未能确认", className: "color-fg-danger" },
 } as const;
 
-/** 「退出所有关联应用」的结果：逐个应用如实展示，不把未送达说成成功。 */
+/**
+ * 「退出所有关联应用」的结果（挂在根布局，跨路由保留）：逐个应用如实展示，不把未送达说成成功。
+ */
+export function GlobalLogoutNotice() {
+	const report = useSessionStore((s) => s.logoutReport);
+	const setLogoutReport = useSessionStore((s) => s.setLogoutReport);
+	const navigate = useAppNavigate();
+	if (!report) return null;
+	return (
+		<GlobalLogoutResult
+			report={report}
+			onClose={() => {
+				setLogoutReport(null);
+				navigate({ to: "/" });
+			}}
+		/>
+	);
+}
+
 function GlobalLogoutResult({ report, onClose }: { report: GlobalLogoutReport; onClose: () => void }) {
 	const synced =
 		report.deliveries.every((d) => d.status === "delivered") && report.without_backchannel.length === 0;

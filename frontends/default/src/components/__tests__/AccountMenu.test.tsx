@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useSessionStore } from "@/stores/SessionStore";
-import { AccountMenu } from "../AccountMenu";
+import { AccountMenu, GlobalLogoutNotice } from "../AccountMenu";
 
 /**
  * 主站账号菜单：只列服务端给出的本浏览器有效账号；切换 / 退出都等服务端确认；
@@ -109,7 +109,7 @@ describe("AccountMenu", () => {
 		expect(useSessionStore.getState().status?.authenticated).toBe(true);
 	});
 
-	it("reports every relying party honestly after signing out of all linked apps", async () => {
+	it("reports every relying party honestly after signing out of all linked apps, even after the menu unmounts", async () => {
 		webSession.logout.mockResolvedValue({
 			...status(),
 			authenticated: false,
@@ -123,15 +123,33 @@ describe("AccountMenu", () => {
 				without_backchannel: ["Legacy App"],
 			},
 		});
-		await setup(true);
+		useSessionStore.getState().setLogoutReport(null);
+		useSessionStore.getState().setStatus({ ...status(), global_logout: true });
+		// 与真实应用一致：菜单在 /service 布局里，结果对话框挂在根布局。
+		const tree = (withMenu: boolean) => (
+			<ThemeProvider>
+				<BaseStyles>
+					{withMenu && <AccountMenu />}
+					<GlobalLogoutNotice />
+				</BaseStyles>
+			</ThemeProvider>
+		);
+		const view = render(tree(true));
+		fireEvent.click(screen.getByRole("button", { name: /账号菜单/ }));
 		fireEvent.click(await screen.findByText("退出所有关联应用…"));
 		// 确认对话框
 		fireEvent.click(await screen.findByRole("button", { name: "退出所有关联应用" }));
 		await waitFor(() => expect(webSession.logout).toHaveBeenCalledWith("global", null, "csrf"));
+		// 退出后路由离开 /service：账号菜单被卸载，结果仍然要可见
+		view.rerender(tree(false));
 		expect(await screen.findByText("已退出 FloatCTF，但应用未全部同步")).toBeTruthy();
 		expect(screen.getByText("已确认退出")).toBeTruthy();
 		expect(screen.getByText("未送达，将自动重试")).toBeTruthy();
 		expect(screen.getByText(/Legacy App/)).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "完成" }));
+		await waitFor(() => expect(screen.queryByText("已退出 FloatCTF，但应用未全部同步")).toBeNull());
+		expect(navigate).toHaveBeenCalledWith({ to: "/" });
+		expect(useSessionStore.getState().logoutReport).toBeNull();
 	});
 
 	it("hides the global sign-out when the deployment does not support it", async () => {
