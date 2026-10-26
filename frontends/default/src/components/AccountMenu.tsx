@@ -26,7 +26,12 @@ export function AccountAvatar({ account, size = 20 }: { account: Pick<WebAccount
 	const [failedSrc, setFailedSrc] = useState<string | null>(null);
 	const src = account.avatar?.startsWith("/public/") ? account.avatar : null;
 	if (src && failedSrc !== src) {
-		return <Avatar src={src} size={size} alt="" onError={() => setFailedSrc(src)} />;
+		// 固定尺寸、不收缩：按钮的 leadingVisual 是 flex 子项，裸 <img> 会被压成一条线。
+		return (
+			<span className="d-inline-flex flex-shrink-0" style={{ width: size, height: size }}>
+				<Avatar src={src} size={size} alt="" onError={() => setFailedSrc(src)} />
+			</span>
+		);
 	}
 	const initial = (account.nickname || account.username).trim().charAt(0).toUpperCase() || "?";
 	return (
