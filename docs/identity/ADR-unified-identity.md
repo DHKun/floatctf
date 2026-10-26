@@ -91,7 +91,7 @@ oidc_browser_containers (新)            oidc_browser_sessions (扩展)
 
 ## 6. 标准退出（P4）
 
-见本 ADR 附录 A（随 P4 提交补充）。
+见本文[附录 A](#附录-a标准退出rp-initiated-logout-10--back-channel-logout-10)。
 
 ## 7. 部署与 Issuer
 
@@ -108,3 +108,54 @@ oidc_browser_containers (新)            oidc_browser_sessions (扩展)
 - **主站作为 OP 的 RP（自己走一遍 OIDC）**：同源场景下多一次重定向与令牌兑换却没有安全收益；仍需要第一方会话存放 RP 结果。
 - **每个账号一个 Cookie**（`fctf_sso_0..n`）：Cookie 数量随账号增长、无法原子轮换、JS 外的列表管理困难。
 - **共享 Cookie 给 LearnOS**：违背「共享的是 OP 身份会话，由各 RP 通过标准 OIDC 换取自己的会话」。
+
+## 附录 A：标准退出（RP-Initiated Logout 1.0 + Back-Channel Logout 1.0）
+
+迁移 `20261025211040-oidc-standard-logout.sql`（只新增表与可空/默认列）：
+
+| 表 / 列 | 用途 |
+|---|---|
+| `oidc_clients.post_logout_redirect_uris jsonb default '[]'` | RP-Initiated Logout 回跳地址（逐字匹配） |
+| `oidc_clients.backchannel_logout_uri text null` | Back-Channel 接收地址（登记期：https 绝对 URL、无 userinfo / fragment） |
+| `oidc_session_clients (session_id, oidc_client_id)` | 某个身份会话（`sid`）向哪些应用签发过令牌——全局退出的通知范围 |
+| `oidc_logout_requests` | end_session 的一次性确认事务（10 分钟、浏览器绑定、CSRF） |
+| `oidc_backchannel_deliveries` | 投递 outbox：每个 (应用, sid) 一行，`pending → delivered / failed`，`attempts`、`next_attempt_at`、`last_error`、`last_jti` |
+
+**`sid`**：开关打开后，ID Token 带 `sid`（= 身份会话的 `sid` 列），Discovery 宣告
+`end_session_endpoint`、`backchannel_logout_supported = true`、`backchannel_logout_session_supported = true`，并在 `claims_supported` 中加入 `sid`
+（不实现 Front-Channel Logout，不宣告该能力）。
+LearnOS 用 `(iss, sid)` 把自己的 Better Auth 会话映射到 FloatCTF 身份会话。
+
+**RP-Initiated Logout（`GET|POST /oauth/end-session`）**
+
+1. `id_token_hint` 必须是本 OP 签发的 ID Token（允许已过期）；同时给出 `client_id` 时必须等于其 `aud`。
+2. `post_logout_redirect_uri` 必须与应用登记值逐字相等，否则不回跳（只显示结果页）。
+3. 只作用于**本浏览器** Cookie 中与 hint 的 `sid`/`sub` 匹配的会话；没有 hint 时作用于本浏览器全部账号（确认页逐个列出）。
+   第三方站点无法借此退出别人的身份，也无法跳过 OP 确认页。
+4. 确认页（`end_session.html`）：「取消，保持登录」/「退出」；一次性事务 + 浏览器绑定 + CSRF；GET 从不改变状态。
+5. 退出后：所有关联应用都确认收到通知 → 直接回到登记的 `post_logout_redirect_uri`（带原 `state`）；
+   有应用未确认或不支持标准退出 → 停在结果页逐个如实列出，再给出「返回应用」。
+6. 旧的 `POST /oauth/logout`、`DELETE /api/users/sso` 保留兼容，**不是**标准端点，也不触发通知。
+
+**Back-Channel Logout（OP → RP，服务端到服务端）**
+
+- 只在用户明确选择「退出所有关联应用」（主站按钮 + 确认，或 end_session 确认）时触发；普通退出从不通知 RP。
+- 范围：被撤销的那个 `sid` 在 `oidc_session_clients` 中关联、且仍 active、登记了 `backchannel_logout_uri` 的应用；
+  拿到过令牌但没登记接收地址的应用记入 `without_backchannel`，界面明确提示「可能仍保持登录」。
+- Logout Token（RS256，`typ=logout+jwt`）：`iss`、`aud=client_id`、`iat`、`exp`（默认 120 秒）、`jti`、`sid`、`sub`、
+  `events = {"http://schemas.openid.net/event/backchannel-logout": {}}`，**没有** `nonce`。
+- 投递：`application/x-www-form-urlencoded` 的 `logout_token`；2xx = delivered；400 = RP 拒绝（failed，不重试）；
+  其他状态 / 网络错误 = pending，按 30s、2m、10m、30m、2h 退避，最多 6 次后 failed。
+  后台 worker 每 30 秒领取到期行（`FOR UPDATE SKIP LOCKED` + 120 秒租约，多实例不重复投递）；只投递本实例 issuer 的行。
+- 出站安全（SSRF）：自建 DNS 解析器只放行公网地址并直接用解析结果连接（防 DNS 重绑定）；IP 字面量同样校验；
+  内网 RP 只能由运维在 `[oidc].backchannel_trusted_hosts`（精确 `host:port`）放行，应用自己无法声明；
+  禁止重定向、不走代理、连接/总超时（`backchannel_timeout_secs`）、只读状态码。被策略拒绝的目标记 failed（「非公网地址」），不重试。
+- 结果如实返回：主站「退出所有关联应用」对话框与 OP 结果页逐个显示 已确认退出 / 未送达，将自动重试 / 未能确认。
+
+**LearnOS 侧**（其仓库 `docs/floatctf-unified-logout.md`）：`POST /api/oidc/backchannel-logout` 用 JWKS 验签并校验
+`typ`、受信 issuer、`aud`、`iat/exp`、`events`、无 `nonce`、`sid` 或 `sub`、`jti` 防重放，只删除映射到 `(iss, sid)`
+（只有 `sub` 时为 `(iss, sub)`）的 Better Auth 会话；Better Auth 未开启 cookie cache，删除即刻生效。
+
+**上线顺序约束（I11）**：Better Auth 只要在 Discovery 里看到 `end_session_endpoint` 就会把普通 `signOut` 变成 RP-Initiated Logout。
+所以必须**先**上线带 `disableProviderLogout: true` 的 LearnOS，**再**打开 OP 的 `backchannel_logout`。
+
