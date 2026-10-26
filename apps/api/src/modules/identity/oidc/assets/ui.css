@@ -248,7 +248,7 @@ h1 {
 label.field { display: block; margin: 14px 0 6px; font-weight: 500; font-size: 14px; }
 input[type="text"], input[type="password"] {
   width: 100%;
-  height: 42px;
+  height: 44px;
   padding: 0 12px;
   font: inherit;
   color: var(--foreground);
@@ -285,6 +285,8 @@ a.btn { text-decoration: none; }
 .btn.ghost { border-color: transparent; background: transparent; color: var(--muted-foreground); font-weight: 500; }
 .btn.ghost:hover { background: var(--accent); color: var(--foreground); }
 .btn.destructive { color: var(--destructive); }
+/* 「不是你？使用其他账号」：行内文字按钮也保证 44px 高的点击区域。 */
+.consent-switch .link-button { display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px; vertical-align: middle; }
 .link-button {
   display: inline;
   padding: 0;
@@ -304,6 +306,9 @@ a.btn { text-decoration: none; }
 .scopes li { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; }
 .scopes li + li { border-top: 1px solid var(--border); }
 .scopes input { margin: 3px 0 0; width: 18px; height: 18px; flex: none; accent-color: var(--primary); }
+/* 触屏：整行文字都是复选框的点击区域（≥44px），小方框本身不必放大。 */
+.scopes label { flex: 1 1 auto; min-height: 44px; cursor: pointer; }
+.scopes input:disabled + label { cursor: default; }
 .scopes .title { font-weight: 600; }
 .scopes .desc { display: block; color: var(--muted-foreground); font-size: 13px; }
 .badge {
@@ -351,7 +356,7 @@ details > summary:hover { background: var(--accent); color: var(--foreground); }
 .signout-list { list-style: none; margin: 4px 0 8px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .signout-list li { display: flex; align-items: center; gap: 10px; min-height: 44px; }
 .signout-list .who { flex: 1 1 auto; }
-.signout-list .btn { flex: none; min-height: 36px; padding: 0 12px; font-size: 13.5px; }
+.signout-list .btn { flex: none; min-height: 44px; padding: 0 14px; font-size: 13.5px; }
 
 .muted { color: var(--muted-foreground); }
 .consent-switch { margin: 16px 0 0; }
